@@ -24,6 +24,8 @@ type SaveFileV1 = {
   gridSize: number;
   types: string;
   density: string;
+  /** Mois d'incendie par tuile (absent dans les anciennes sauvegardes). */
+  fire?: string;
   treasury: number;
   month: number;
   taxRate: number;
@@ -31,7 +33,22 @@ type SaveFileV1 = {
   speed: Speed;
 };
 
-const TYPE_TO_CHAR: Record<TileType, string> = { GRASS: 'g', DIRT: 'd', ROAD: '=', R: 'r', C: 'c', I: 'i', POWER: 'p' };
+const TYPE_TO_CHAR: Record<TileType, string> = {
+  GRASS: 'g',
+  DIRT: 'd',
+  ROAD: '=',
+  R: 'r',
+  C: 'c',
+  I: 'i',
+  POWER: 'p',
+  POLICE: 'P',
+  FIRE: 'F',
+  HOSPITAL: 'H',
+  SCHOOL: 'S',
+  WATER: 'W',
+  METRO: 'M',
+  PARK: 'k',
+};
 const CHAR_TO_TYPE = Object.fromEntries(Object.entries(TYPE_TO_CHAR).map(([k, v]) => [v, k])) as Record<string, TileType>;
 
 export function serialize(game: SavedGame): string {
@@ -41,6 +58,7 @@ export function serialize(game: SavedGame): string {
     gridSize: game.gridSize,
     types: game.tiles.map((t) => TYPE_TO_CHAR[t.type]).join(''),
     density: game.tiles.map((t) => String(t.density)).join(''),
+    fire: game.tiles.map((t) => String(Math.min(9, t.fire))).join(''),
     treasury: game.treasury,
     month: game.month,
     taxRate: game.taxRate,
@@ -59,6 +77,7 @@ export function deserialize(json: string): SavedGame | null {
     for (let i = 0; i < n; i++) {
       tiles[i].type = CHAR_TO_TYPE[f.types[i]] ?? 'GRASS';
       tiles[i].density = Math.min(3, Math.max(0, Number(f.density[i]) || 0));
+      tiles[i].fire = f.fire ? Number(f.fire[i]) || 0 : 0;
     }
     return {
       gridSize: f.gridSize,

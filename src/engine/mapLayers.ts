@@ -8,9 +8,10 @@ export type MapLayers = { ground: SkPicture[]; shadows: SkPicture; buildings: Sk
 
 type Cache = { tiles: Tile[]; size: number; layers: MapLayers };
 
-/** Seuls type, densité et courant ont un rendu : la valeur foncière qui bouge chaque mois ne redessine rien. */
+/** Seuls type, densité, réseaux et incendie ont un rendu : la valeur foncière qui bouge chaque mois ne redessine rien. */
 const visuallyEqual = (a: Tile, b: Tile) =>
-  a === b || (a.type === b.type && a.density === b.density && a.powered === b.powered);
+  a === b ||
+  (a.type === b.type && a.density === b.density && a.powered === b.powered && a.water === b.water && a.fire === b.fire);
 
 /** Une ligne a-t-elle au moins une tuile visuellement modifiée ? */
 function rowChanged(prev: Tile[], next: Tile[], size: number, y: number): boolean {

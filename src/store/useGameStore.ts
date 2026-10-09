@@ -70,7 +70,7 @@ function freshCity(tiles: Tile[], size: number, treasury: number) {
     month: 0,
     taxRate: DEFAULT_TAX,
     demand: INITIAL_DEMAND,
-    stats: computeStats(powered),
+    stats: computeStats(powered, size),
     lastIncome: 0,
     lastExpenses: 0,
     selected: null,
@@ -86,7 +86,7 @@ export const useGameStore = create<GameState>()((set, get) => {
     const s = get();
     const res = applyTool(s.tiles, s.gridSize, s.tool, x, y, s.treasury);
     if (!res.ok) return res.reason || null;
-    set({ tiles: res.tiles, treasury: s.treasury - res.cost, stats: computeStats(res.tiles) });
+    set({ tiles: res.tiles, treasury: s.treasury - res.cost, stats: computeStats(res.tiles, s.gridSize, s.taxRate) });
     Haptics.selectionAsync().catch(() => {});
     return null;
   };
@@ -148,6 +148,13 @@ export const useGameStore = create<GameState>()((set, get) => {
         taxRate: s.taxRate,
         demand: s.demand,
       });
+      // Événements du mois : on prévient le joueur comme dans SimCity.
+      if (res.events.newFires > 0) {
+        get().showToast(res.stats.coverage.fire > 0 ? '🔥 Incendie ! Les pompiers interviennent' : '🔥 Incendie ! Construisez une caserne 🚒');
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
+      } else if (res.events.destroyed > 0) {
+        get().showToast(`💥 ${res.events.destroyed} bâtiment(s) détruit(s) par le feu`);
+      }
       set({
         tiles: res.tiles,
         treasury: res.treasury,
@@ -182,7 +189,7 @@ export const useGameStore = create<GameState>()((set, get) => {
         taxRate: save.taxRate,
         demand: save.demand,
         speed: save.speed,
-        stats: computeStats(tiles),
+        stats: computeStats(tiles, save.gridSize, save.taxRate),
       });
     },
 

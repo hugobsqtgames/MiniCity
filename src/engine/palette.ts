@@ -15,6 +15,7 @@ export const PALETTE = {
   median: '#f1c40f',
 
   pavement: '#bdc3c7',
+  parkPath: '#e5d3b3',
   pavementBorder: '#95a5a6',
   powerGround: '#566573',
 

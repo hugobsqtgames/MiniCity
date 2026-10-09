@@ -44,8 +44,12 @@ export function Toolbar() {
     <View pointerEvents="box-none" style={[styles.wrap, { bottom: insets.bottom + 8 }]}>
       <Glass intensity={45} style={styles.glass}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.scroll}>
-          {TOOLS.map((t) => (
-            <ToolButton key={t.id} tool={t} active={t.id === tool} onPress={() => setTool(t.id)} />
+          {TOOLS.map((t, i) => (
+            <View key={t.id} style={styles.item}>
+              {/* Séparateur entre familles d'outils : base | zones | réseaux | services. */}
+              {i > 0 && TOOLS[i - 1].group !== t.group && <View style={styles.divider} />}
+              <ToolButton tool={t} active={t.id === tool} onPress={() => setTool(t.id)} />
+            </View>
           ))}
         </ScrollView>
       </Glass>
@@ -62,6 +66,8 @@ const styles = StyleSheet.create({
     borderColor: theme.glassBorder,
   },
   scroll: { paddingHorizontal: 10, paddingTop: 22, paddingBottom: 10, gap: 8 },
+  item: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  divider: { width: 1, height: 56, backgroundColor: 'rgba(255,255,255,0.18)', marginHorizontal: 2 },
   tool: {
     width: 76,
     height: 84,

@@ -67,6 +67,48 @@ export function createDemoMap(size: number): Tile[] {
   set(39, 32, 'POWER');
   set(24, 24, 'POWER');
 
+  // Châteaux d'eau à côté des centrales (ils ont besoin de courant pour pomper).
+  for (const [x, y] of [
+    [41, 8],
+    [13, 37],
+    [23, 37],
+    [7, 16],
+    [29, 9],
+    [39, 23],
+    [39, 33],
+    [25, 24],
+  ]) {
+    set(x, y, 'WATER');
+  }
+
+  // Services publics répartis dans les quartiers.
+  const services: [number, number, TileType][] = [
+    [14, 17, 'POLICE'],
+    [33, 25, 'POLICE'],
+    [22, 30, 'POLICE'],
+    [19, 14, 'FIRE'],
+    [30, 18, 'FIRE'],
+    [15, 33, 'FIRE'],
+    [26, 16, 'HOSPITAL'],
+    [11, 24, 'SCHOOL'],
+    [33, 33, 'SCHOOL'],
+    [20, 22, 'METRO'],
+    [27, 26, 'METRO'],
+    [13, 15, 'METRO'],
+    [35, 15, 'METRO'],
+    [16, 25, 'PARK'],
+    [31, 29, 'PARK'],
+    [23, 13, 'PARK'],
+  ];
+  for (const [x, y, type] of services) set(x, y, type);
+
+  // Un incendie en cours dans le centre : les pompiers sont en route.
+  const burning = get(21, 26);
+  if (burning.type === 'C' || burning.type === 'R') {
+    burning.density = Math.max(1, burning.density);
+    burning.fire = 1;
+  }
+
   // Quelques parcelles de terre battue en périphérie.
   for (let y = 38; y <= 41; y++) for (let x = 12; x <= 16; x++) if (rand(x, y) > 0.35) set(x, y, 'DIRT');
 

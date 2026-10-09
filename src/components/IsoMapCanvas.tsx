@@ -6,26 +6,29 @@ import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { useDerivedValue, useSharedValue, withDecay } from 'react-native-reanimated';
 import { scheduleOnRN } from 'react-native-worklets';
 
-import { agentsSignature, buildAgents, drawAgents, type Agent } from '../engine/agents';
+import { agentsSignature, buildAgents, drawAgents, drawFires, type AgentsScene } from '../engine/agents';
 import { getOrigin, getWorldSize, screenToTile } from '../engine/iso';
 import { useMapLayers } from '../engine/mapLayers';
-import { COLORS, diamondPath } from '../engine/renderer';
-import { TOOL_BY_ID } from '../sim/constants';
+import { buildCoveragePicture, COLORS, diamondPath } from '../engine/renderer';
+import { COVERAGE_TOOL, TOOL_BY_ID } from '../sim/constants';
+import { computeCoverage } from '../sim/simulation';
 import { useGameStore, type Tile } from '../store/useGameStore';
 
 /** Itinéraires des PNJ, recalculés seulement quand les routes ou la population (par paliers) changent. */
 class AgentCache {
   private key = '';
-  private agents: Agent[] = [];
-  get(tiles: Tile[], size: number, population: number): Agent[] {
-    const key = `${size}:${agentsSignature(tiles, population)}`;
+  private scene: AgentsScene = { agents: [], fires: [] };
+  get(tiles: Tile[], size: number, population: number, metroRiders: number): AgentsScene {
+    const key = `${size}:${agentsSignature(tiles, population)}:${Math.floor(metroRiders / 200)}`;
     if (key !== this.key) {
       this.key = key;
-      this.agents = buildAgents(tiles, size, population);
+      this.scene = buildAgents(tiles, size, population, metroRiders);
     }
-    return this.agents;
+    return this.scene;
   }
 }
+
+const EMPTY_SCENE: AgentsScene = { agents: [], fires: [] };
 
 /** En dessous de ce zoom, les PNJ font moins d'un pixel : inutile de les dessiner. */
 const AGENTS_MIN_SCALE = 0.3;
@@ -36,7 +39,7 @@ const AGENTS_MIN_SCALE = 0.3;
  */
 type Camera = { tx: SharedValue<number>; ty: SharedValue<number>; scale: SharedValue<number>; width: number; height: number };
 
-function AgentsLayer({ agents, gridSize, camera }: { agents: Agent[]; gridSize: number; camera: Camera }) {
+function AgentsLayer({ scene, gridSize, camera, fires }: { scene: AgentsScene; gridSize: number; camera: Camera; fires?: boolean }) {
   const clock = useClock();
   const world = getWorldSize(gridSize);
   const picture = useDerivedValue(() => {
@@ -52,7 +55,8 @@ function AgentsLayer({ agents, gridSize, camera }: { agents: Agent[]; gridSize: 
       y1: (camera.height - camera.ty.get()) / s + margin,
     };
     return createPicture((canvas) => {
-      if (visible) drawAgents(canvas, agents, now, gridSize, view);
+      if (fires) drawFires(canvas, scene.fires, now, gridSize, view);
+      else if (visible) drawAgents(canvas, scene, now, gridSize, view);
     }, { x: 0, y: 0, ...world });
   });
   return <Picture picture={picture} />;
@@ -89,10 +93,23 @@ export function IsoMapCanvas() {
 
   const showAgents = useGameStore((s) => s.showAgents);
   const [agentCache] = useState(() => new AgentCache());
-  const agents = useMemo(
-    () => (showAgents ? agentCache.get(tiles, gridSize, population) : []),
-    [showAgents, agentCache, tiles, gridSize, population],
+  const metroRiders = useGameStore((s) => s.stats.metroRiders);
+  const scene = useMemo(
+    () => {
+      const full = agentCache.get(tiles, gridSize, population, metroRiders);
+      // Les incendies restent visibles même quand le trafic est désactivé.
+      return showAgents ? full : { ...EMPTY_SCENE, fires: full.fires };
+    },
+    [showAgents, agentCache, tiles, gridSize, population, metroRiders],
   );
+
+  // Carte de couverture du service dont l'outil est sélectionné (police, pompiers, métro…).
+  const coverageService = COVERAGE_TOOL[tool];
+  const coverage = useMemo(() => {
+    if (!coverageService) return null;
+    const cov = computeCoverage(tiles, gridSize)[coverageService];
+    return buildCoveragePicture(tiles, gridSize, coverageService, cov);
+  }, [coverageService, tiles, gridSize]);
   const highlight = useMemo(
     () => (selected ? diamondPath(selected.x, selected.y, getOrigin(gridSize)) : null),
     [selected, gridSize],
@@ -180,7 +197,7 @@ export function IsoMapCanvas() {
   const gesture = Gesture.Race(Gesture.Simultaneous(pan, pinch), paint, tap);
   const highlightColor = TOOL_BY_ID[tool].color;
 
-  // Trois calques superposés : seul celui des PNJ est redessiné à chaque image.
+  // Calques superposés : seuls ceux des PNJ et des incendies sont redessinés à chaque image.
   // Le sol et les bâtiments ne se redessinent que pendant un déplacement / zoom
   // ou quand la carte change. Les bâtiments restent au-dessus des voitures.
   return (
@@ -194,10 +211,10 @@ export function IsoMapCanvas() {
             <Picture picture={layers.shadows} />
           </Group>
         </Canvas>
-        {agents.length > 0 && (
+        {scene.agents.length > 0 && (
           <Canvas style={styles.layer} pointerEvents="none">
             <Group transform={transform}>
-              <AgentsLayer agents={agents} gridSize={gridSize} camera={{ tx, ty, scale, width: screenW, height: screenH }} />
+              <AgentsLayer scene={scene} gridSize={gridSize} camera={{ tx, ty, scale, width: screenW, height: screenH }} />
             </Group>
           </Canvas>
         )}
@@ -206,6 +223,7 @@ export function IsoMapCanvas() {
             {layers.buildings.map((p, i) => (
               <Picture key={`b${i}`} picture={p} />
             ))}
+            {coverage && <Picture picture={coverage} />}
             {highlight && (
               <Group>
                 <Path path={highlight} color={highlightColor} opacity={0.35} />
@@ -214,6 +232,13 @@ export function IsoMapCanvas() {
             )}
           </Group>
         </Canvas>
+        {scene.fires.length > 0 && (
+          <Canvas style={styles.layer} pointerEvents="none">
+            <Group transform={transform}>
+              <AgentsLayer scene={scene} gridSize={gridSize} camera={{ tx, ty, scale, width: screenW, height: screenH }} fires />
+            </Group>
+          </Canvas>
+        )}
       </View>
     </GestureDetector>
   );

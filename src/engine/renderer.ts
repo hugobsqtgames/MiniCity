@@ -10,7 +10,7 @@ import {
   type SkPicture,
 } from '@shopify/react-native-skia';
 
-import { tileIndex, type Tile } from './map';
+import { SERVICE_TYPES, tileIndex, type ServiceType, type Tile } from './map';
 import { getOrigin, getWorldSize, gridToWorld, HALF_H, HALF_W, tileDiamond, type IsoOrigin, type Point } from './iso';
 import { PALETTE, shade } from './palette';
 
@@ -146,6 +146,10 @@ type Prism = {
   /** Bande horizontale décorative (rayures de tour de refroidissement). */
   stripe?: { at: number; height: number; color: string };
   antenna?: number;
+  /** Feuillage (arbres) ou réservoir sphérique posé au sommet du prisme. */
+  blob?: { r: number; color: string };
+  /** Décor peint sur le toit-terrasse. */
+  decal?: 'cross' | 'helipad';
 };
 
 type Footprint = { top: Point; right: Point; bottom: Point; left: Point };
@@ -169,8 +173,8 @@ function prismCenter(tileCenter: Point, p: Prism): Point {
 }
 
 function addPrismShadow(shadows: SkPathBuilder, tileCenter: Point, p: Prism) {
-  const base = footprint(prismCenter(tileCenter, p), p.size, 0);
-  const totalH = (p.z ?? 0) + p.h + (p.roof === 'hip' ? (p.roofHeight ?? 0) * 0.6 : 0);
+  const base = footprint(prismCenter(tileCenter, p), p.blob ? Math.max(p.size, p.blob.r / HALF_W) : p.size, 0);
+  const totalH = (p.z ?? 0) + p.h + (p.roof === 'hip' ? (p.roofHeight ?? 0) * 0.6 : 0) + (p.blob ? p.blob.r * 1.6 : 0);
   const off = { x: totalH * SUN.x, y: totalH * SUN.y };
   const corners = [base.top, base.right, base.bottom, base.left];
   shadows.addPoly(convexHull([...corners, ...corners.map((c) => add(c, off))]), true);
@@ -261,15 +265,55 @@ function drawPrism(canvas: SkCanvas, tileCenter: Point, p: Prism) {
     canvas.drawPath(antenna, strokePaint('#2c3e50', 1.2));
     canvas.drawCircle(a.x, a.y - p.antenna, 1.6, fillPaint('#e74c3c'));
   }
+
+  if (p.decal) {
+    const zTop = z + p.h;
+    // Rectangle en coordonnées de grille relatives au centre du toit.
+    const quad = (x0: number, y0: number, x1: number, y1: number) =>
+      polyPath(
+        [
+          [x0, y0],
+          [x1, y0],
+          [x1, y1],
+          [x0, y1],
+        ].map(([gx, gy]) => up({ x: center.x + (gx - gy) * HALF_W, y: center.y + (gx + gy) * HALF_H }, zTop)),
+      );
+    if (p.decal === 'cross') {
+      const k = p.size * 0.32;
+      const w = p.size * 0.09;
+      canvas.drawPath(quad(-k, -w, k, w), fillPaint('#e74c3c'));
+      canvas.drawPath(quad(-w, -k, w, k), fillPaint('#e74c3c'));
+    } else {
+      const k = p.size * 0.3;
+      canvas.drawPath(quad(-k, -k, k, k), fillPaint('#566573'));
+      canvas.drawPath(quad(-k * 0.6, -k * 0.12, k * 0.6, k * 0.12), fillPaint('#f1c40f'));
+    }
+  }
+
+  if (p.blob) {
+    // Boule de feuillage ombrée : base sombre, reflet clair en haut à gauche.
+    const c = up(center, z + p.h + p.blob.r * 0.7);
+    canvas.drawCircle(c.x, c.y, p.blob.r, fillPaint(shade(p.blob.color, -0.25)));
+    canvas.drawCircle(c.x - p.blob.r * 0.25, c.y - p.blob.r * 0.25, p.blob.r * 0.72, fillPaint(p.blob.color));
+    canvas.drawCircle(c.x - p.blob.r * 0.4, c.y - p.blob.r * 0.45, p.blob.r * 0.3, fillPaint(shade(p.blob.color, 0.3)));
+  }
 }
+
+/** Un arbre : tronc brun + boule de feuillage. */
+function tree(ox: number, oy: number, scale = 1, color = '#1e8449'): Prism {
+  return { ox, oy, size: 0.06, h: 5 * scale, color: '#6e4b2a', roof: 'flat', blob: { r: 6.5 * scale, color } };
+}
+
+/** Trier les sous-objets d'une tuile de l'arrière vers l'avant (ordre peintre). */
+const byDepth = (a: Prism, b: Prism) => (a.ox ?? 0) + (a.oy ?? 0) - ((b.ox ?? 0) + (b.oy ?? 0));
 
 // ---------------------------------------------------------------------------
 // Catalogue des bâtiments (par type + densité)
 // ---------------------------------------------------------------------------
 
-function buildingFor(tile: Tile): Prism[] {
+function baseBuildingFor(tile: Tile): Prism[] {
   // Parcelle zonée mais pas encore construite : seul le sol (lot teinté) est dessiné.
-  if (tile.density === 0 && tile.type !== 'POWER') return [];
+  if (tile.density === 0 && (tile.type === 'R' || tile.type === 'C' || tile.type === 'I')) return [];
   const v = hash01(tile.x, tile.y);
   const v2 = hash01(tile.x, tile.y, 7);
   switch (tile.type) {
@@ -389,9 +433,80 @@ function buildingFor(tile: Tile): Prism[] {
           windows: { floors: 1, cols: 3, color: PALETTE.windowPower },
         },
       ];
+    case 'POLICE':
+      return [
+        { size: 0.74, h: 20, color: '#2e4a8a', windows: { floors: 2, cols: 3, color: '#d6eaf8' }, antenna: 9 },
+        // Gyrophares sur le toit.
+        { ox: -0.1, oy: 0.05, size: 0.09, z: 20, h: 3, color: '#e74c3c' },
+        { ox: 0.05, oy: -0.1, size: 0.09, z: 20, h: 3, color: '#3498db' },
+      ];
+    case 'FIRE':
+      return [
+        // Tour de séchage des tuyaux, à l'arrière.
+        { ox: -0.26, oy: -0.24, size: 0.24, h: 36, color: '#a93226', windows: { floors: 4, cols: 1, color: '#fadbd8' } },
+        { size: 0.82, h: 16, color: '#c0392b', windows: { floors: 1, cols: 2, color: '#4a1c16' }, decal: 'helipad' },
+      ];
+    case 'HOSPITAL':
+      return [
+        { ox: -0.18, oy: -0.18, size: 0.5, h: 40, color: '#dfe6e9', windows: { floors: 6, cols: 2, color: '#aed6f1' } },
+        { size: 0.84, h: 18, color: '#ecf0f1', windows: { floors: 2, cols: 4, color: '#aed6f1' }, decal: 'cross' },
+      ];
+    case 'SCHOOL':
+      return [
+        { ox: -0.24, oy: -0.24, size: 0.18, h: 28, color: '#d35400', roof: 'hip', roofColor: '#a04000', roofHeight: 7, antenna: 6 },
+        { size: 0.84, h: 14, color: '#e67e22', windows: { floors: 2, cols: 4, color: '#fdebd0' }, roof: 'hip', roofColor: '#922b21', roofHeight: 8 },
+      ];
+    case 'WATER':
+      return [
+        { size: 0.12, h: 24, color: '#7f8c8d' },
+        { size: 0.46, z: 24, h: 14, color: '#5dade2', roof: 'hip', roofColor: '#2e86c1', roofHeight: 6, stripe: { at: 6, height: 2, color: '#ecf0f1' } },
+        { ox: 0.28, oy: 0.26, size: 0.26, h: 8, color: '#95a5a6', windows: { floors: 1, cols: 1, color: '#d6eaf8' } },
+      ];
+    case 'METRO':
+      return [
+        { ox: -0.05, oy: -0.05, size: 0.56, h: 10, color: '#16a085', windows: { floors: 1, cols: 2, color: '#0b5345' } },
+        // Totem "M" : poteau + panneau.
+        { ox: 0.3, oy: 0.18, size: 0.05, h: 16, color: '#2c3e50' },
+        { ox: 0.3, oy: 0.18, size: 0.16, z: 16, h: 8, color: '#f1c40f', stripe: { at: 3, height: 2, color: '#16a085' } },
+      ];
+    case 'PARK':
+      return [
+        tree(-0.26, -0.22, 1.1),
+        tree(0.24, -0.26, 0.9, '#239b56'),
+        { size: 0.18, h: 2, color: '#85929e', blob: { r: 3, color: '#5dade2' } },
+        tree(-0.22, 0.26, 0.95, '#239b56'),
+        tree(0.26, 0.22, 1.15),
+      ];
+    case 'GRASS': {
+      // Arbres épars sur l'herbe (déterministes) : la campagne n'est plus vide.
+      if (v > 0.1) return [];
+      const n = v < 0.04 ? 2 : 1;
+      const trees: Prism[] = [];
+      for (let k = 0; k < n; k++) {
+        trees.push(tree(hash01(tile.x, tile.y, 11 + k) * 0.6 - 0.3, hash01(tile.x, tile.y, 21 + k) * 0.6 - 0.3, 0.8 + v2 * 0.5, v2 > 0.5 ? '#1e8449' : '#239b56'));
+      }
+      return trees.sort(byDepth);
+    }
     default:
       return [];
   }
+}
+
+/** Hauteur (px) du sommet du bâtiment d'une tuile — sert à placer les flammes. */
+export function buildingHeight(tile: Tile): number {
+  return baseBuildingFor(tile).reduce((m, p) => Math.max(m, prismTop(p)), 0);
+}
+
+/** Bâtiment d'une tuile, calciné et aux fenêtres rougeoyantes s'il brûle. */
+function buildingFor(tile: Tile): Prism[] {
+  const prisms = baseBuildingFor(tile);
+  if (tile.fire === 0) return prisms;
+  return prisms.map((p) => ({
+    ...p,
+    color: shade(p.color, -0.55),
+    roofColor: p.roofColor ? shade(p.roofColor, -0.55) : undefined,
+    windows: p.windows ? { ...p.windows, color: '#ff8c1a' } : undefined,
+  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -473,6 +588,28 @@ function addGround(batch: PathBatch, tiles: Tile[], size: number, tile: Tile, or
       batch.poly('fill:' + PALETTE.powerGround, diamond);
       batch.poly('stroke:' + PALETTE.pavementBorder, diamond);
       break;
+    case 'PARK': {
+      batch.poly('fill:' + PALETTE.grassBorder, diamond);
+      batch.poly('stroke:' + PALETTE.grassBorder, diamond);
+      // Allées en croix.
+      const lane = (pa: Point, pb: Point) => {
+        const len = Math.hypot(pb.x - pa.x, pb.y - pa.y) || 1;
+        const n = { x: (-(pb.y - pa.y) / len) * 2, y: ((pb.x - pa.x) / len) * 2 };
+        batch.poly('deco:' + PALETTE.parkPath, [add(pa, n), add(pb, n), add(pb, { x: -n.x, y: -n.y }), add(pa, { x: -n.x, y: -n.y })]);
+      };
+      lane(mid(d.top, d.left), mid(d.right, d.bottom));
+      lane(mid(d.top, d.right), mid(d.left, d.bottom));
+      break;
+    }
+    case 'POLICE':
+    case 'FIRE':
+    case 'HOSPITAL':
+    case 'SCHOOL':
+    case 'WATER':
+    case 'METRO':
+      batch.poly('fill:' + PALETTE.pavement, diamond);
+      batch.poly('stroke:' + PALETTE.pavementBorder, diamond);
+      break;
     default:
       batch.poly('fill:' + PALETTE.grass, diamond);
       batch.poly('stroke:' + PALETTE.grassBorder, diamond);
@@ -495,6 +632,7 @@ function flushGround(canvas: SkCanvas, batch: PathBatch) {
     else if (key.startsWith('fill:')) canvas.drawPath(path, fillPaint(key.slice(5)));
     else if (key.startsWith('stroke:')) canvas.drawPath(path, strokePaint(key.slice(7), 1));
     else if (key.startsWith('zone:')) canvas.drawPath(path, strokePaint(key.slice(5), 1.5));
+    else if (key.startsWith('deco:')) canvas.drawPath(path, fillPaint(key.slice(5)));
   }
 }
 
@@ -530,8 +668,23 @@ function drawNoPower(canvas: SkCanvas, center: Point, topZ: number) {
   canvas.drawPath(bolt, fillPaint(PALETTE.median));
 }
 
+/** Goutte bleue "pas d'eau" : la zone ne pourra pas dépasser le niveau 1. */
+function drawNoWater(canvas: SkCanvas, center: Point, topZ: number) {
+  const c = up(center, topZ + 14);
+  const drop = Skia.PathBuilder.Make();
+  drop.moveTo(c.x, c.y - 9);
+  drop.lineTo(c.x + 5.2, c.y - 0.5);
+  drop.lineTo(c.x - 5.2, c.y - 0.5);
+  drop.close();
+  drop.addCircle(c.x, c.y + 1.5, 5.6);
+  const path = drop.detach();
+  canvas.drawPath(path, fillPaint('#2e86c1'));
+  canvas.drawPath(path, strokePaint('#ffffff', 1.2));
+  canvas.drawCircle(c.x - 1.8, c.y + 0.2, 1.4, fillPaint('#d6eaf8'));
+}
+
 function prismTop(p: Prism): number {
-  return (p.z ?? 0) + p.h + (p.roof === 'hip' ? (p.roofHeight ?? 8) : 0) + (p.antenna ?? 0);
+  return (p.z ?? 0) + p.h + (p.roof === 'hip' ? (p.roofHeight ?? 8) : 0) + (p.antenna ?? 0) + (p.blob ? p.blob.r * 1.7 : 0);
 }
 
 const isZone = (t: Tile) => t.type === 'R' || t.type === 'C' || t.type === 'I';
@@ -602,7 +755,9 @@ export function buildBuildingPicture(tiles: Tile[], gridSize: number, y0: number
           drawPrism(canvas, center, prism);
           top = Math.max(top, prismTop(prism));
         }
-        if (isZone(t) && !t.powered) drawNoPower(canvas, center, top);
+        const needsPower = isZone(t) || (t.type !== 'PARK' && SERVICE_TYPES.includes(t.type as ServiceType));
+        if (needsPower && !t.powered) drawNoPower(canvas, center, top);
+        else if (isZone(t) && t.density > 0 && !t.water) drawNoWater(canvas, center, top);
       }
     }
   }, worldRect(gridSize));
@@ -620,5 +775,68 @@ export function buildMapPicture(tiles: Tile[], gridSize: number) {
   const shadows = buildShadowPicture(tiles, gridSize);
   return createPicture((canvas) => {
     for (const p of [...ground, shadows, ...buildings]) canvas.drawPicture(p);
+  }, worldRect(gridSize));
+}
+
+// ---------------------------------------------------------------------------
+// Cartes de couverture (affichées quand un outil de service est sélectionné)
+// ---------------------------------------------------------------------------
+
+export const COVERAGE_COLORS: Record<ServiceType, string> = {
+  POLICE: '#3498db',
+  FIRE: '#e74c3c',
+  HOSPITAL: '#ecf0f1',
+  SCHOOL: '#f39c12',
+  WATER: '#5dade2',
+  METRO: '#1abc9c',
+  PARK: '#2ecc71',
+};
+
+/**
+ * Teinte chaque tuile selon la couverture du service (comme les "cartes" de
+ * SimCity) : plus c'est opaque, mieux le quartier est desservi.
+ */
+export function buildCoveragePicture(tiles: Tile[], gridSize: number, service: ServiceType, coverage: Float32Array) {
+  const origin = getOrigin(gridSize);
+  return createPicture((canvas) => {
+    const levels = [Skia.PathBuilder.Make(), Skia.PathBuilder.Make(), Skia.PathBuilder.Make()];
+    for (let i = 0; i < tiles.length; i++) {
+      const c = coverage[i];
+      if (c <= 0) continue;
+      const d = tileDiamond(tiles[i].x, tiles[i].y, origin);
+      levels[c > 0.75 ? 2 : c > 0.5 ? 1 : 0].addPoly([d.top, d.right, d.bottom, d.left], true);
+    }
+    const color = COVERAGE_COLORS[service];
+    levels.forEach((b, k) => {
+      const paint = fillPaint(color).copy();
+      paint.setAlphaf(0.18 + k * 0.12);
+      canvas.drawPath(b.detach(), paint);
+    });
+
+    // Lignes de métro souterraines : chaque station reliée à la plus proche.
+    if (service === 'METRO') {
+      const stations = tiles.filter((t) => t.type === 'METRO');
+      const line = strokePaint('#1abc9c', 7).copy();
+      line.setAlphaf(0.9);
+      const done = new Set<string>();
+      for (const a of stations) {
+        let best: Tile | null = null;
+        let bestD = Infinity;
+        for (const b of stations) {
+          const dd = Math.hypot(a.x - b.x, a.y - b.y);
+          if (b !== a && dd < bestD) {
+            bestD = dd;
+            best = b;
+          }
+        }
+        if (!best) continue;
+        const key = [a.x, a.y, best.x, best.y].sort().join(',');
+        if (done.has(key)) continue;
+        done.add(key);
+        const pa = tileCenter(a, origin);
+        const pb = tileCenter(best, origin);
+        canvas.drawPath(Skia.Path.Polygon([pa, pb], false), line);
+      }
+    }
   }, worldRect(gridSize));
 }

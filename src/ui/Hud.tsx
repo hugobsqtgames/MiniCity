@@ -38,6 +38,7 @@ export function Hud({ onOpenMenu }: { onOpenMenu: () => void }) {
   const insets = useSafeAreaInsets();
   const treasury = useGameStore((s) => s.treasury);
   const population = useGameStore((s) => s.stats.population);
+  const mood = useGameStore((s) => s.stats.happiness);
   const month = useGameStore((s) => s.month);
   const demand = useGameStore((s) => s.demand);
   const net = useGameStore((s) => s.lastIncome - s.lastExpenses);
@@ -64,6 +65,9 @@ export function Hud({ onOpenMenu }: { onOpenMenu: () => void }) {
           <View style={styles.row}>
             <Text style={styles.stat}>👨‍👩‍👧‍👦 {formatNumber(population)}</Text>
             <Text style={styles.stat}>📅 {formatDate(month)}</Text>
+            <Text style={[styles.stat, { color: mood >= 60 ? theme.positive : mood >= 40 ? theme.text : theme.negative }]}>
+              {mood >= 60 ? '😊' : mood >= 40 ? '😐' : '😠'} {mood}%
+            </Text>
           </View>
           <View style={styles.row}>
             <Pressable onPress={togglePause} style={styles.chip} hitSlop={6}>
@@ -99,10 +103,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
   },
   left: { flex: 1, gap: 6 },
-  row: { flexDirection: 'row', alignItems: 'baseline', gap: 12 },
+  row: { flexDirection: 'row', alignItems: 'baseline', gap: 10 },
   money: { color: theme.text, fontSize: 30, fontWeight: '800', fontVariant: ['tabular-nums'], letterSpacing: -0.5, flexShrink: 1 },
   delta: { fontSize: 13, fontWeight: '700', fontVariant: ['tabular-nums'] },
-  stat: { color: theme.text, fontSize: 16, fontWeight: '700', fontVariant: ['tabular-nums'] },
+  stat: { color: theme.text, fontSize: 15, fontWeight: '700', fontVariant: ['tabular-nums'] },
   chip: {
     paddingHorizontal: 10,
     paddingVertical: 5,

@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import Animated, { FadeIn, FadeOut, SlideInDown, SlideOutDown } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -38,8 +38,11 @@ function Btn({ label, onPress, tone = 'default', selected }: { label: string; on
 export function MenuSheet({ onClose, onSaveNow, lastSavedAt }: { onClose: () => void; onSaveNow: () => void; lastSavedAt: number | null }) {
   const insets = useSafeAreaInsets();
   const s = useGameStore();
+  const { height } = useWindowDimensions();
 
-  const coverage = s.stats.zones ? Math.round((s.stats.poweredZones / s.stats.zones) * 100) : 0;
+  const st = s.stats;
+  const powerPct = st.zones ? Math.round((st.poweredZones / st.zones) * 100) : 0;
+  const waterPct = st.zones ? Math.round((st.wateredZones / st.zones) * 100) : 0;
   const perCitizen = (s.taxRate / 100) * INCOME_PER_CITIZEN;
 
   return (
@@ -54,6 +57,7 @@ export function MenuSheet({ onClose, onSaveNow, lastSavedAt }: { onClose: () => 
       >
         <Glass intensity={60} style={styles.sheet} tint="rgba(12,22,34,0.72)">
           <View style={styles.grabber} />
+          <ScrollView style={{ maxHeight: height * 0.72 }} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
           <Text style={styles.title}>MiniCity</Text>
 
           <Text style={styles.section}>Simulation</Text>
@@ -74,14 +78,31 @@ export function MenuSheet({ onClose, onSaveNow, lastSavedAt }: { onClose: () => 
             <Btn label="+" onPress={() => s.setTax(s.taxRate + 1)} />
           </Row>
 
-          <Text style={styles.section}>Bilan du mois</Text>
+          <Text style={styles.section}>Citoyens</Text>
+          <View style={styles.statsGrid}>
+            <Stat label="Habitants" value={formatNumber(st.population)} />
+            <Stat label="Actifs" value={formatNumber(st.workforce)} />
+            <Stat label="Emplois" value={formatNumber(st.jobsC + st.jobsI)} />
+            <Stat label="Chômage" value={`${st.unemployment} %`} color={st.unemployment > 15 ? theme.negative : undefined} />
+            <Stat label="Satisfaction" value={`${st.happiness} %`} color={st.happiness >= 60 ? theme.positive : st.happiness < 40 ? theme.negative : undefined} />
+            <Stat label="Criminalité" value={`${st.crime} %`} color={st.crime > 35 ? theme.negative : undefined} />
+          </View>
+
+          <Text style={styles.section}>Services publics (bâtiments desservis)</Text>
+          <Gauge icon="⚡" label="Électricité" value={powerPct} color="#f1c40f" />
+          <Gauge icon="💧" label="Eau courante" value={waterPct} color="#5dade2" />
+          <Gauge icon="🚓" label="Police" value={st.coverage.police} color="#3498db" />
+          <Gauge icon="🚒" label="Pompiers" value={st.coverage.fire} color="#e74c3c" />
+          <Gauge icon="🏥" label="Santé" value={st.coverage.health} color="#ecf0f1" />
+          <Gauge icon="🏫" label="Éducation" value={st.coverage.education} color="#f39c12" />
+          <Gauge icon="🚇" label={`Métro (${formatNumber(st.metroRiders)} usagers)`} value={st.coverage.metro} color="#1abc9c" />
+          {st.fires > 0 && <Text style={styles.alert}>🔥 {st.fires} incendie(s) en cours</Text>}
+
+          <Text style={styles.section}>Budget du mois</Text>
           <View style={styles.statsGrid}>
             <Stat label="Recettes" value={`+${formatMoney(s.lastIncome)}`} color={theme.positive} />
             <Stat label="Entretien" value={`-${formatMoney(s.lastExpenses)}`} color={theme.negative} />
             <Stat label="Par habitant" value={`$${perCitizen.toFixed(2)}`} />
-            <Stat label="Emplois" value={formatNumber(s.stats.jobsC + s.stats.jobsI)} />
-            <Stat label="Routes" value={formatNumber(s.stats.roads)} />
-            <Stat label="Réseau ⚡" value={`${coverage} %`} />
           </View>
 
           <Text style={styles.section}>Partie</Text>
@@ -94,8 +115,24 @@ export function MenuSheet({ onClose, onSaveNow, lastSavedAt }: { onClose: () => 
             100 % hors ligne · sauvegarde auto toutes les 15 s
             {lastSavedAt ? ` · dernière à ${new Date(lastSavedAt).toTimeString().slice(0, 8)}` : ''}
           </Text>
+          </ScrollView>
         </Glass>
       </Animated.View>
+    </View>
+  );
+}
+
+/** Jauge horizontale de couverture d'un service. */
+function Gauge({ icon, label, value, color }: { icon: string; label: string; value: number; color: string }) {
+  return (
+    <View style={styles.gauge}>
+      <Text style={styles.gaugeLabel} numberOfLines={1}>
+        {icon} {label}
+      </Text>
+      <View style={styles.gaugeTrack}>
+        <View style={[styles.gaugeFill, { width: `${value}%`, backgroundColor: color }]} />
+      </View>
+      <Text style={styles.gaugeValue}>{value}%</Text>
     </View>
   );
 }
@@ -139,5 +176,12 @@ const styles = StyleSheet.create({
   statLabel: { color: theme.textDim, fontSize: 11, fontWeight: '700' },
   statValue: { color: theme.text, fontSize: 16, fontWeight: '800', fontVariant: ['tabular-nums'] },
   actions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  content: { gap: 10, paddingBottom: 4 },
+  alert: { color: '#f5b041', fontSize: 14, fontWeight: '800' },
+  gauge: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  gaugeLabel: { color: theme.text, fontSize: 13, fontWeight: "700", flexShrink: 1, minWidth: 120, maxWidth: 190 },
+  gaugeTrack: { flex: 1, height: 8, borderRadius: 4, backgroundColor: 'rgba(255,255,255,0.12)', overflow: 'hidden' },
+  gaugeFill: { height: '100%', borderRadius: 4 },
+  gaugeValue: { color: theme.textDim, fontSize: 12, fontWeight: '700', width: 38, textAlign: 'right', fontVariant: ['tabular-nums'] },
   foot: { color: theme.textDim, fontSize: 11, marginTop: 4 },
 });

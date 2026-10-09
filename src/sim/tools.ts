@@ -19,11 +19,11 @@ export function applyTool(tiles: Tile[], size: number, tool: ToolId, x: number, 
   if (tool === 'bulldoze') {
     if (tile.type === 'GRASS') return { ok: false, reason: 'Rien à raser ici' };
     // Un bâtiment rasé laisse un terrain vague ; un terrain vague redevient de l'herbe.
-    next = { ...tile, type: tile.type === 'DIRT' ? 'GRASS' : 'DIRT', density: 0, powered: false, value: 0 };
+    next = { ...tile, type: tile.type === 'DIRT' ? 'GRASS' : 'DIRT', density: 0, powered: false, water: false, value: 0, fire: 0 };
   } else {
     if (tile.type === def.places) return { ok: false, reason: '' };
     if (!isEmptyGround(tile)) return { ok: false, reason: 'Terrain occupé — passez le bulldozer 🚜' };
-    next = { ...tile, type: def.places!, density: 0, powered: false, value: 0 };
+    next = { ...tile, type: def.places!, density: 0, powered: false, water: false, value: 0, fire: 0 };
   }
 
   if (funds < def.cost) return { ok: false, reason: 'Fonds insuffisants 💸' };
