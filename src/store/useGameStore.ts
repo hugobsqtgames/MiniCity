@@ -33,6 +33,8 @@ type GameState = {
   lastExpenses: number;
   speed: Speed;
   paused: boolean;
+  /** Voitures et piétons animés (désactivables pour économiser la batterie). */
+  showAgents: boolean;
 
   tool: ToolId;
   selected: { x: number; y: number } | null;
@@ -48,6 +50,7 @@ type GameState = {
   tick: () => void;
   setSpeed: (speed: Speed) => void;
   togglePause: () => void;
+  toggleAgents: () => void;
   setTax: (rate: number) => void;
   newCity: () => void;
   loadDemoCity: () => void;
@@ -93,6 +96,7 @@ export const useGameStore = create<GameState>()((set, get) => {
     ...freshCity(createEmptyMap(GRID_SIZE), GRID_SIZE, START_FUNDS),
     speed: 1,
     paused: false,
+    showAgents: true,
     tool: 'inspect',
     toast: null,
 
@@ -157,6 +161,7 @@ export const useGameStore = create<GameState>()((set, get) => {
 
     setSpeed: (speed) => set({ speed, paused: false }),
     togglePause: () => set({ paused: !get().paused }),
+    toggleAgents: () => set({ showAgents: !get().showAgents }),
     setTax: (rate) => set({ taxRate: Math.max(MIN_TAX, Math.min(MAX_TAX, Math.round(rate))) }),
 
     newCity: () => set({ ...freshCity(createEmptyMap(GRID_SIZE), GRID_SIZE, START_FUNDS), paused: false }),

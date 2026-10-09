@@ -1,15 +1,62 @@
-import { Canvas, Group, Path, Picture } from '@shopify/react-native-skia';
-import { useMemo } from 'react';
+import { Canvas, createPicture, Group, Path, Picture, useClock } from '@shopify/react-native-skia';
+import type { SharedValue } from 'react-native-reanimated';
+import { useMemo, useState } from 'react';
 import { StyleSheet, useWindowDimensions, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { useDerivedValue, useSharedValue, withDecay } from 'react-native-reanimated';
 import { scheduleOnRN } from 'react-native-worklets';
 
+import { agentsSignature, buildAgents, drawAgents, type Agent } from '../engine/agents';
 import { getOrigin, getWorldSize, screenToTile } from '../engine/iso';
 import { useMapLayers } from '../engine/mapLayers';
 import { COLORS, diamondPath } from '../engine/renderer';
 import { TOOL_BY_ID } from '../sim/constants';
-import { useGameStore } from '../store/useGameStore';
+import { useGameStore, type Tile } from '../store/useGameStore';
+
+/** Itinéraires des PNJ, recalculés seulement quand les routes ou la population (par paliers) changent. */
+class AgentCache {
+  private key = '';
+  private agents: Agent[] = [];
+  get(tiles: Tile[], size: number, population: number): Agent[] {
+    const key = `${size}:${agentsSignature(tiles, population)}`;
+    if (key !== this.key) {
+      this.key = key;
+      this.agents = buildAgents(tiles, size, population);
+    }
+    return this.agents;
+  }
+}
+
+/** En dessous de ce zoom, les PNJ font moins d'un pixel : inutile de les dessiner. */
+const AGENTS_MIN_SCALE = 0.3;
+
+/**
+ * Couche animée des PNJ. Composant séparé : démonté quand le trafic est désactivé,
+ * ce qui arrête aussi l'horloge et donc le redessin image par image.
+ */
+type Camera = { tx: SharedValue<number>; ty: SharedValue<number>; scale: SharedValue<number>; width: number; height: number };
+
+function AgentsLayer({ agents, gridSize, camera }: { agents: Agent[]; gridSize: number; camera: Camera }) {
+  const clock = useClock();
+  const world = getWorldSize(gridSize);
+  const picture = useDerivedValue(() => {
+    const now = clock.get();
+    const s = camera.scale.get();
+    const visible = s >= AGENTS_MIN_SCALE;
+    // Zone de l'écran en coordonnées monde (+ marge) : seuls ces PNJ sont dessinés.
+    const margin = 20;
+    const view = {
+      x0: -camera.tx.get() / s - margin,
+      y0: -camera.ty.get() / s - margin,
+      x1: (camera.width - camera.tx.get()) / s + margin,
+      y1: (camera.height - camera.ty.get()) / s + margin,
+    };
+    return createPicture((canvas) => {
+      if (visible) drawAgents(canvas, agents, now, gridSize, view);
+    }, { x: 0, y: 0, ...world });
+  });
+  return <Picture picture={picture} />;
+}
 
 const MIN_SCALE = 0.15;
 const MAX_SCALE = 3;
@@ -36,7 +83,16 @@ export function IsoMapCanvas() {
   const paintMove = useGameStore((s) => s.paintMove);
   const paintEnd = useGameStore((s) => s.paintEnd);
 
+  const population = useGameStore((s) => s.stats.population);
+
   const layers = useMapLayers(tiles, gridSize);
+
+  const showAgents = useGameStore((s) => s.showAgents);
+  const [agentCache] = useState(() => new AgentCache());
+  const agents = useMemo(
+    () => (showAgents ? agentCache.get(tiles, gridSize, population) : []),
+    [showAgents, agentCache, tiles, gridSize, population],
+  );
   const highlight = useMemo(
     () => (selected ? diamondPath(selected.x, selected.y, getOrigin(gridSize)) : null),
     [selected, gridSize],
@@ -124,15 +180,29 @@ export function IsoMapCanvas() {
   const gesture = Gesture.Race(Gesture.Simultaneous(pan, pinch), paint, tap);
   const highlightColor = TOOL_BY_ID[tool].color;
 
+  // Trois calques superposés : seul celui des PNJ est redessiné à chaque image.
+  // Le sol et les bâtiments ne se redessinent que pendant un déplacement / zoom
+  // ou quand la carte change. Les bâtiments restent au-dessus des voitures.
   return (
     <GestureDetector gesture={gesture}>
-      <View style={styles.fill} collapsable={false}>
-        <Canvas style={styles.fill}>
+      <View style={styles.root} collapsable={false}>
+        <Canvas style={styles.layer} pointerEvents="none">
           <Group transform={transform}>
             {layers.ground.map((p, i) => (
               <Picture key={`g${i}`} picture={p} />
             ))}
             <Picture picture={layers.shadows} />
+          </Group>
+        </Canvas>
+        {agents.length > 0 && (
+          <Canvas style={styles.layer} pointerEvents="none">
+            <Group transform={transform}>
+              <AgentsLayer agents={agents} gridSize={gridSize} camera={{ tx, ty, scale, width: screenW, height: screenH }} />
+            </Group>
+          </Canvas>
+        )}
+        <Canvas style={styles.layer} pointerEvents="none">
+          <Group transform={transform}>
             {layers.buildings.map((p, i) => (
               <Picture key={`b${i}`} picture={p} />
             ))}
@@ -150,5 +220,6 @@ export function IsoMapCanvas() {
 }
 
 const styles = StyleSheet.create({
-  fill: { flex: 1, backgroundColor: COLORS.background },
+  root: { flex: 1, backgroundColor: COLORS.background },
+  layer: StyleSheet.absoluteFill,
 });

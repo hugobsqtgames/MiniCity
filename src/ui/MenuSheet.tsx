@@ -63,6 +63,9 @@ export function MenuSheet({ onClose, onSaveNow, lastSavedAt }: { onClose: () => 
               <Btn key={sp} label={`${sp}×`} onPress={() => s.setSpeed(sp)} selected={!s.paused && s.speed === sp} />
             ))}
           </Row>
+          <Row label="Trafic & piétons">
+            <Btn label={s.showAgents ? '🚗 Activés' : 'Désactivés'} onPress={s.toggleAgents} selected={s.showAgents} />
+          </Row>
           <Row label={`Impôts ${s.taxRate} %`}>
             <Btn label="−" onPress={() => s.setTax(s.taxRate - 1)} />
             <View style={styles.taxTrack}>

@@ -23,6 +23,9 @@ npm run web           # aperçu navigateur (CanvasKit servi en local, aucun CDN)
 1. Tracer des routes, puis zoner R (vert), C (bleu), I (jaune) à moins de 3 cases d'une route.
 2. Poser une centrale : le courant suit routes et zones contiguës jusqu'à 15 cases. ⚡ rouge = pas de courant.
 3. Laisser tourner : la demande RCI (jauges du HUD) fait pousser les bâtiments du niveau 1 au niveau 3.
+4. Voitures et piétons apparaissent avec les routes et la population (désactivables dans le menu ⚙︎).
+
+![PNJ](docs/maquettes/10-pnj-banlieue.png)
 
 ## Architecture
 
@@ -39,3 +42,7 @@ src/ui/       HUD glassmorphism, barre d'outils, fiche, toast, menu, splash
 - **Raycasting inverse** : `screenToTile` (worklet) annule la caméra puis inverse la projection
   (`gx = dx/W + dy/H`, `gy = dy/H − dx/W`, puis `floor`).
 - **Depth sorting** : row-major de (0,0) vers (N−1,N−1).
+- **PNJ** (`engine/agents.ts`) : itinéraires calculés côté JS quand les routes changent (marche aléatoire
+  aller-retour, voie de droite pour les voitures, trottoir pour les piétons), positions interpolées
+  chaque image dans un worklet. La carte est rendue en 3 canvas superposés (sol, PNJ, bâtiments) :
+  seul le calque PNJ se redessine à chaque image, et seuls les PNJ visibles à l'écran sont dessinés.
