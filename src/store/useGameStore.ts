@@ -1,32 +1,11 @@
 import { create } from 'zustand';
 
-export type TileType = 'DIRT' | 'GRASS' | 'ROAD' | 'R' | 'C' | 'I' | 'POWER';
+import { createDemoMap } from '../engine/demoMap';
+import { createEmptyMap, type Tile } from '../engine/map';
 
-export type Tile = {
-  x: number;
-  y: number;
-  type: TileType;
-  /** 0-3 */
-  density: number;
-  powered: boolean;
-  value: number;
-};
+export { createEmptyMap, tileIndex, type Tile, type TileType } from '../engine/map';
 
-/** Phase 1 : 20x20. Passera à 50x50 en phase 2+. */
-export const GRID_SIZE = 20;
-
-export function createEmptyMap(size: number): Tile[] {
-  const tiles: Tile[] = new Array(size * size);
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      tiles[y * size + x] = { x, y, type: 'GRASS', density: 0, powered: false, value: 0 };
-    }
-  }
-  return tiles;
-}
-
-/** Index 1D (row-major) : l'ordre du tableau EST l'ordre de rendu (y puis x). */
-export const tileIndex = (x: number, y: number, size: number) => y * size + x;
+export const GRID_SIZE = 50;
 
 type GameState = {
   gridSize: number;
@@ -41,7 +20,8 @@ type GameState = {
 
 export const useGameStore = create<GameState>()((set) => ({
   gridSize: GRID_SIZE,
-  tiles: createEmptyMap(GRID_SIZE),
+  // Phase 2 : quartier de démo pour juger le rendu (remplacé par une carte vierge quand les outils arriveront).
+  tiles: createDemoMap(GRID_SIZE),
   selected: null,
   selectTile: (x, y) => set({ selected: { x, y } }),
   clearSelection: () => set({ selected: null }),

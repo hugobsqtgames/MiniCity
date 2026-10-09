@@ -9,7 +9,7 @@ import { getOrigin, getWorldSize, screenToTile } from '../engine/iso';
 import { buildMapPicture, COLORS, diamondPath } from '../engine/renderer';
 import { useGameStore } from '../store/useGameStore';
 
-const MIN_SCALE = 0.35;
+const MIN_SCALE = 0.1;
 const MAX_SCALE = 3;
 
 export function IsoMapCanvas() {
@@ -29,7 +29,7 @@ export function IsoMapCanvas() {
 
   // Caméra : écran = monde * scale + (tx, ty). Vit entièrement sur le thread UI.
   const world = getWorldSize(gridSize);
-  const initialScale = Math.min(1, (screenW * 0.95) / world.width);
+  const initialScale = 0.55;
   const scale = useSharedValue(initialScale);
   const tx = useSharedValue((screenW - world.width * initialScale) / 2);
   const ty = useSharedValue((screenH - world.height * initialScale) / 2);
