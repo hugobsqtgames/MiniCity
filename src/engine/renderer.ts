@@ -7,6 +7,7 @@ import {
   type SkPaint,
   type SkPath,
   type SkPathBuilder,
+  type SkPicture,
 } from '@shopify/react-native-skia';
 
 import { tileIndex, type Tile } from './map';
@@ -267,6 +268,8 @@ function drawPrism(canvas: SkCanvas, tileCenter: Point, p: Prism) {
 // ---------------------------------------------------------------------------
 
 function buildingFor(tile: Tile): Prism[] {
+  // Parcelle zonée mais pas encore construite : seul le sol (lot teinté) est dessiné.
+  if (tile.density === 0 && tile.type !== 'POWER') return [];
   const v = hash01(tile.x, tile.y);
   const v2 = hash01(tile.x, tile.y, 7);
   switch (tile.type) {
@@ -496,46 +499,126 @@ function flushGround(canvas: SkCanvas, batch: PathBatch) {
 }
 
 // ---------------------------------------------------------------------------
-// Construction de la scène
+// Indicateurs
 // ---------------------------------------------------------------------------
 
-/**
- * Enregistre toute la carte dans une SkPicture (liste de commandes GPU figée).
- * Elle n'est reconstruite que lorsque le tableau `tiles` change : pan/zoom ne
- * font que modifier la matrice de la caméra, sans aucun re-render React.
- *
- * Trois passes :
- *  1. Sol — regroupé par couleur (quelques draw calls pour 2 500 tuiles).
- *  2. Ombres — un seul chemin noir 20 % : les ombres qui se chevauchent
- *     fusionnent au lieu de s'additionner.
- *  3. Bâtiments — depth sorting strict : row-major, de (0,0) vers (N-1,N-1).
- */
-export function buildMapPicture(tiles: Tile[], gridSize: number) {
-  const origin = getOrigin(gridSize);
-  const { width, height } = getWorldSize(gridSize);
-
-  return createPicture(
-    (canvas) => {
-      const ground = new PathBatch();
-      for (let i = 0; i < tiles.length; i++) addGround(ground, tiles, gridSize, tiles[i], origin);
-      flushGround(canvas, ground);
-
-      const shadows = Skia.PathBuilder.Make();
-      const buildings: { center: Point; prisms: Prism[] }[] = [];
-      for (let i = 0; i < tiles.length; i++) {
-        const prisms = buildingFor(tiles[i]);
-        if (prisms.length === 0) continue;
-        const p = gridToWorld(tiles[i].x, tiles[i].y, origin);
-        const center = { x: p.x, y: p.y + HALF_H };
-        for (const prism of prisms) addPrismShadow(shadows, center, prism);
-        buildings.push({ center, prisms });
-      }
-      canvas.drawPath(shadows.detach(), fillPaint(PALETTE.shadow));
-
-      for (const b of buildings) {
-        for (const prism of b.prisms) drawPrism(canvas, b.center, prism);
-      }
-    },
-    { x: 0, y: 0, width, height },
+/** Éclair jaune "pas de courant" flottant au-dessus d'une zone non alimentée (style SimCity). */
+function drawNoPower(canvas: SkCanvas, center: Point, topZ: number) {
+  const c = up(center, topZ + 14);
+  const bg = Skia.Path.Polygon(
+    [
+      { x: c.x, y: c.y - 9 },
+      { x: c.x + 9, y: c.y },
+      { x: c.x, y: c.y + 9 },
+      { x: c.x - 9, y: c.y },
+    ],
+    true,
   );
+  canvas.drawPath(bg, fillPaint('#c0392b'));
+  canvas.drawPath(bg, strokePaint('#ffffff', 1.2));
+  const bolt = Skia.Path.Polygon(
+    [
+      { x: c.x + 1.5, y: c.y - 6 },
+      { x: c.x - 3.5, y: c.y + 1 },
+      { x: c.x - 0.2, y: c.y + 1 },
+      { x: c.x - 1.5, y: c.y + 6 },
+      { x: c.x + 3.5, y: c.y - 1 },
+      { x: c.x + 0.2, y: c.y - 1 },
+    ],
+    true,
+  );
+  canvas.drawPath(bolt, fillPaint(PALETTE.median));
+}
+
+function prismTop(p: Prism): number {
+  return (p.z ?? 0) + p.h + (p.roof === 'hip' ? (p.roofHeight ?? 8) : 0) + (p.antenna ?? 0);
+}
+
+const isZone = (t: Tile) => t.type === 'R' || t.type === 'C' || t.type === 'I';
+
+// ---------------------------------------------------------------------------
+// Construction de la scène, en couches et en morceaux
+// ---------------------------------------------------------------------------
+//
+// La carte est découpée en bandes de lignes (CHUNK_ROWS). Chaque bande a deux
+// SkPicture : son sol et ses bâtiments. Les ombres forment une couche unique.
+// Ordre de dessin : tous les sols -> ombres -> bâtiments bande par bande
+// (depth sorting strict row-major, de (0,0) vers (N-1,N-1)).
+// Quand une tuile change, seules les bandes concernées sont ré-enregistrées.
+
+export const CHUNK_ROWS = 10;
+
+function tileCenter(t: Tile, origin: IsoOrigin): Point {
+  const p = gridToWorld(t.x, t.y, origin);
+  return { x: p.x, y: p.y + HALF_H };
+}
+
+function worldRect(gridSize: number) {
+  const { width, height } = getWorldSize(gridSize);
+  return { x: 0, y: 0, width, height };
+}
+
+/** Sol des lignes [y0, y1] (herbe, terre, routes, parcelles, falaises). */
+export function buildGroundPicture(tiles: Tile[], gridSize: number, y0: number, y1: number) {
+  const origin = getOrigin(gridSize);
+  return createPicture((canvas) => {
+    const ground = new PathBatch();
+    for (let y = y0; y <= y1; y++) {
+      for (let x = 0; x < gridSize; x++) addGround(ground, tiles, gridSize, tiles[tileIndex(x, y, gridSize)], origin);
+    }
+    flushGround(canvas, ground);
+  }, worldRect(gridSize));
+}
+
+/**
+ * Toutes les ombres de la carte dans un seul chemin noir à 20 % : les ombres
+ * qui se chevauchent fusionnent au lieu de s'additionner.
+ */
+export function buildShadowPicture(tiles: Tile[], gridSize: number) {
+  const origin = getOrigin(gridSize);
+  return createPicture((canvas) => {
+    const shadows = Skia.PathBuilder.Make();
+    for (const t of tiles) {
+      const prisms = buildingFor(t);
+      if (prisms.length === 0) continue;
+      const center = tileCenter(t, origin);
+      for (const prism of prisms) addPrismShadow(shadows, center, prism);
+    }
+    canvas.drawPath(shadows.detach(), fillPaint(PALETTE.shadow));
+  }, worldRect(gridSize));
+}
+
+/** Bâtiments (et indicateurs) des lignes [y0, y1], dans l'ordre row-major. */
+export function buildBuildingPicture(tiles: Tile[], gridSize: number, y0: number, y1: number) {
+  const origin = getOrigin(gridSize);
+  return createPicture((canvas) => {
+    for (let y = y0; y <= y1; y++) {
+      for (let x = 0; x < gridSize; x++) {
+        const t = tiles[tileIndex(x, y, gridSize)];
+        const prisms = buildingFor(t);
+        const center = tileCenter(t, origin);
+        let top = 0;
+        for (const prism of prisms) {
+          drawPrism(canvas, center, prism);
+          top = Math.max(top, prismTop(prism));
+        }
+        if (isZone(t) && !t.powered) drawNoPower(canvas, center, top);
+      }
+    }
+  }, worldRect(gridSize));
+}
+
+/** Toute la carte en une seule image (aperçus, tests). */
+export function buildMapPicture(tiles: Tile[], gridSize: number) {
+  const ground: SkPicture[] = [];
+  const buildings: SkPicture[] = [];
+  for (let y0 = 0; y0 < gridSize; y0 += CHUNK_ROWS) {
+    const y1 = Math.min(gridSize - 1, y0 + CHUNK_ROWS - 1);
+    ground.push(buildGroundPicture(tiles, gridSize, y0, y1));
+    buildings.push(buildBuildingPicture(tiles, gridSize, y0, y1));
+  }
+  const shadows = buildShadowPicture(tiles, gridSize);
+  return createPicture((canvas) => {
+    for (const p of [...ground, shadows, ...buildings]) canvas.drawPicture(p);
+  }, worldRect(gridSize));
 }

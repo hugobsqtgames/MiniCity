@@ -2,7 +2,7 @@ import { createEmptyMap, tileIndex, type Tile, type TileType } from './map';
 
 /**
  * Petite ville de démonstration générée de façon déterministe, pour juger le
- * rendu de la phase 2 avant l'arrivée des outils de construction (phase 3).
+ * rendu et la simulation (accessible depuis le menu ⚙︎).
  */
 export function createDemoMap(size: number): Tile[] {
   const tiles = createEmptyMap(size);
@@ -51,15 +51,21 @@ export function createDemoMap(size: number): Tile[] {
     }
   }
 
-  // Centrales électriques au nord-est, routes d'accès et terrain vague.
-  for (let x = 39; x <= 44; x++) set(x, 10, 'ROAD');
-  set(40, 8, 'POWER');
-  set(42, 8, 'POWER');
-  set(41, 8, 'DIRT');
+  // Centrales électriques (portée 15 tuiles) reliées au réseau par des routes.
   for (let y = 5; y <= 9; y++) for (let x = 39; x <= 44; x++) if (get(x, y).type === 'GRASS') set(x, y, 'DIRT');
+  for (let x = 39; x <= 44; x++) set(x, 10, 'ROAD');
+  set(40, 9, 'ROAD');
+  set(42, 9, 'ROAD');
   set(40, 8, 'POWER');
   set(42, 8, 'POWER');
-  set(44, 7, 'POWER');
+  for (let x = 8; x <= 28; x++) set(x, 36, 'ROAD');
+  set(12, 37, 'POWER');
+  set(22, 37, 'POWER');
+  set(7, 15, 'POWER');
+  set(28, 9, 'POWER');
+  set(39, 22, 'POWER');
+  set(39, 32, 'POWER');
+  set(24, 24, 'POWER');
 
   // Quelques parcelles de terre battue en périphérie.
   for (let y = 38; y <= 41; y++) for (let x = 12; x <= 16; x++) if (rand(x, y) > 0.35) set(x, y, 'DIRT');
