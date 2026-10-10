@@ -114,7 +114,7 @@ export function createDemoMap(size: number): Tile[] {
 
   // Grands axes : deux avenues qui se croisent au centre-ville.
   for (let x = 8; x <= 42; x++) set(x, 20, 'AVENUE');
-  for (let y = 8; y <= 36; y++) set(28, y, 'AVENUE');
+  for (let y = 10; y <= 36; y++) set(28, y, 'AVENUE');
   for (let x = 8; x <= 42; x++) set(x, 28, 'AVENUE');
   for (let y = 8; y <= 36; y++) set(18, y, 'AVENUE');
 

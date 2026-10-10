@@ -1,4 +1,5 @@
 import {
+  BlendMode,
   createPicture,
   PaintStyle,
   Skia,
@@ -967,29 +968,65 @@ export function buildBuildingPicture(tiles: Tile[], gridSize: number, b: Block) 
 
 /**
  * Lumières de nuit d'un bloc : fenêtres allumées (environ 60 %), lampadaires le
- * long des routes, projecteurs du stade. Rejouées au-dessus du voile de nuit.
+ * long des routes, projecteurs du stade. Rejouées au-dessus du voile de nuit,
+ * dans un calque à part : chaque bâtiment efface d'abord (mode Clear) les
+ * lumières situées derrière sa silhouette, pour qu'aucune fenêtre ne
+ * « traverse » un immeuble placé devant.
  */
 export function buildLightsPicture(tiles: Tile[], gridSize: number, b: Block) {
   const origin = getOrigin(gridSize);
   return createPicture((canvas) => {
-    const lit = Skia.PathBuilder.Make();
-    const litDim = Skia.PathBuilder.Make();
-    const halos = Skia.PathBuilder.Make();
-    const lamps = Skia.PathBuilder.Make();
+    const eraser = Skia.Paint();
+    eraser.setBlendMode(BlendMode.Clear);
+    const halo = fillPaint('#ffd27a').copy();
+    halo.setAlphaf(0.16);
+    let lit = Skia.PathBuilder.Make();
+    let litDim = Skia.PathBuilder.Make();
+    let halos = Skia.PathBuilder.Make();
+    let lamps = Skia.PathBuilder.Make();
+    let pending = false;
+    const flush = () => {
+      if (!pending) return;
+      canvas.drawPath(halos.detach(), halo);
+      canvas.drawPath(lit.detach(), fillPaint('#ffd27a'));
+      canvas.drawPath(litDim.detach(), fillPaint('#e0a84f'));
+      canvas.drawPath(lamps.detach(), fillPaint('#fff5d6'));
+      lit = Skia.PathBuilder.Make();
+      litDim = Skia.PathBuilder.Make();
+      halos = Skia.PathBuilder.Make();
+      lamps = Skia.PathBuilder.Make();
+      pending = false;
+    };
     eachTile(tiles, gridSize, b, (t) => {
       const center = tileCenter(t, origin);
       if (isRoadType(t.type) && (t.x + t.y) % 2 === 0) {
         const p = add(center, { x: -HALF_W * 0.55, y: -2 });
         lamps.addCircle(p.x, p.y - 6, 1.6);
         halos.addCircle(p.x, p.y - 2, 9);
+        pending = true;
         return;
       }
+      const prisms = buildingFor(t).filter((pr) => !pr.blob || t.type === 'STADIUM');
+      if (!prisms.length) return;
+      // Les lumières déjà posées derrière ce bâtiment sont masquées par sa silhouette.
+      flush();
+      const mask = Skia.PathBuilder.Make();
+      for (const prism of prisms) {
+        const pc = prismCenter(center, prism);
+        const z = prism.z ?? 0;
+        const base = footprint(pc, prism.size, z);
+        const top = footprint(pc, prism.size, z + prism.h);
+        const roof = prism.roof === 'hip' ? up(pc, z + prism.h + (prism.roofHeight ?? 8)) : top.top;
+        mask.addPoly([base.left, base.bottom, base.right, top.right, roof, top.left], true);
+      }
+      canvas.drawPath(mask.detach(), eraser);
       if (t.fire > 0) return;
-      for (const prism of buildingFor(t)) {
+      for (const prism of prisms) {
         if (prism.blob && t.type === 'STADIUM') {
           const c = up(prismCenter(center, prism), (prism.z ?? 0) + prism.h + 2);
           halos.addCircle(c.x, c.y, 14);
           lamps.addCircle(c.x, c.y, 3);
+          pending = true;
         }
         if (!prism.windows) continue;
         const base = footprint(prismCenter(center, prism), prism.size, prism.z ?? 0);
@@ -1008,17 +1045,13 @@ export function buildLightsPicture(tiles: Tile[], gridSize: number, b: Block) {
               const p0 = lerp(a, bb, (c + 0.25) / cols);
               const p1 = lerp(a, bb, (c + 0.75) / cols);
               path.addPoly([up(p0, z0), up(p1, z0), up(p1, z0 + winH), up(p0, z0 + winH)], true);
+              pending = true;
             }
           }
         }
       }
     });
-    const halo = fillPaint('#ffd27a').copy();
-    halo.setAlphaf(0.16);
-    canvas.drawPath(halos.detach(), halo);
-    canvas.drawPath(lit.detach(), fillPaint('#ffd27a'));
-    canvas.drawPath(litDim.detach(), fillPaint('#e0a84f'));
-    canvas.drawPath(lamps.detach(), fillPaint('#fff5d6'));
+    flush();
   }, worldRect(gridSize));
 }
 

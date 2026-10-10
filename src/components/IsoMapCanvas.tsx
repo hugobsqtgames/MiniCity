@@ -1,4 +1,4 @@
-import { Canvas, createPicture, Group, Path, Picture, Rect, Skia, useClock, type SkPicture } from '@shopify/react-native-skia';
+import { BlendMode, Canvas, createPicture, Group, Path, Picture, Rect, Skia, useClock, type SkPicture } from '@shopify/react-native-skia';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { StyleSheet, useWindowDimensions, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
@@ -93,10 +93,25 @@ export function nightAmount(ms: number): number {
  * Rejoue uniquement les blocs de la carte visibles à l'écran (culling).
  * Recalculé sur le thread UI quand la caméra bouge ; aucun re-render React.
  */
-function useVisiblePicture(pictures: SkPicture[][], bounds: { x0: number; x1: number; y0: number; y1: number }[], cam: Camera, worldRect: { width: number; height: number }) {
+function useVisiblePicture(
+  pictures: SkPicture[][],
+  bounds: { x0: number; x1: number; y0: number; y1: number }[],
+  cam: Camera,
+  worldRect: { width: number; height: number },
+  alpha?: SharedValue<number>,
+) {
   return useDerivedValue(() => {
+    const a = alpha ? alpha.get() : 1;
     const v = viewRect(cam, 0);
     return createPicture((canvas) => {
+      if (a < 0.02) return;
+      // Calque isolé : les effacements (mode Clear) des lumières restent dans ce calque,
+      // et l'opacité s'applique aussi aux images enregistrées.
+      const layer = alpha ? Skia.Paint() : null;
+      if (layer) {
+        layer.setAlphaf(a);
+        canvas.saveLayer(layer);
+      }
       for (const list of pictures) {
         for (let i = 0; i < list.length; i++) {
           const b = bounds[i];
@@ -104,15 +119,20 @@ function useVisiblePicture(pictures: SkPicture[][], bounds: { x0: number; x1: nu
           canvas.drawPicture(list[i]);
         }
       }
+      if (layer) canvas.restore();
     }, { x: 0, y: 0, ...worldRect });
-  }, [pictures, bounds]);
+  }, [pictures, bounds, alpha]);
 }
+
+/** Voile de nuit appliqué uniquement aux pixels déjà dessinés du calque (mode srcATop). */
+const NIGHT_TINT = '#0a1236';
 
 function AgentsLayer({
   scene,
   gridSize,
   camera,
   clock,
+  night,
   rotation,
   top,
   showMetro = false,
@@ -121,6 +141,7 @@ function AgentsLayer({
   gridSize: number;
   camera: Camera;
   clock: SharedValue<number>;
+  night: SharedValue<number>;
   rotation: number;
   top?: boolean;
   showMetro?: boolean;
@@ -130,13 +151,27 @@ function AgentsLayer({
     const now = clock.get();
     const visible = camera.scale.get() >= AGENTS_MIN_SCALE;
     const view = viewRect(camera, 20);
-    const night = nightAmount(now);
+    const n = night.get();
     return createPicture((canvas) => {
       if (top) {
         drawFires(canvas, scene.fires, now, gridSize, view, rotation);
         if (showMetro) drawMetro(canvas, scene, now, gridSize, rotation);
-        if (visible && night > 0.15) drawAgents(canvas, scene, now, gridSize, view, rotation, 'lights', night);
-      } else if (visible) drawAgents(canvas, scene, now, gridSize, view, rotation, 'bodies', night);
+        return;
+      }
+      if (!visible) return;
+      if (n > 0.02) {
+        // Véhicules assombris par la nuit, puis phares et feux par-dessus. Les bâtiments,
+        // dessinés dans le calque suivant, masquent naturellement les phares cachés.
+        canvas.saveLayer();
+        drawAgents(canvas, scene, now, gridSize, view, rotation, 'bodies', n);
+        const tint = Skia.Paint();
+        tint.setColor(Skia.Color(NIGHT_TINT));
+        tint.setAlphaf(n * 0.62);
+        tint.setBlendMode(BlendMode.SrcATop);
+        canvas.drawRect({ x: view.x0, y: view.y0, width: view.x1 - view.x0, height: view.y1 - view.y0 }, tint);
+        canvas.restore();
+        if (n > 0.15) drawAgents(canvas, scene, now, gridSize, view, rotation, 'lights', n);
+      } else drawAgents(canvas, scene, now, gridSize, view, rotation, 'bodies', 0);
     }, { x: 0, y: 0, ...world });
   });
   return <Picture picture={picture} />;
@@ -394,8 +429,8 @@ export function IsoMapCanvas() {
   const lightLists = useMemo(() => [layers.lights], [layers]);
   const groundPic = useVisiblePicture(groundLists, layers.bounds, camera, world);
   const buildingPic = useVisiblePicture(buildingLists, layers.bounds, camera, world);
-  const lightsPic = useVisiblePicture(lightLists, layers.bounds, camera, world);
   const night = useDerivedValue(() => (settings.dayNight ? nightAmount(clock.get()) : 0));
+  const lightsPic = useVisiblePicture(lightLists, layers.bounds, camera, world, night);
   const nightOverlay = useDerivedValue(() => night.get() * 0.62);
 
   // Bornes : le centre de l'écran reste toujours au-dessus de la carte.
@@ -489,29 +524,33 @@ export function IsoMapCanvas() {
 
   const gesture = Gesture.Race(Gesture.Simultaneous(pan, pinch), paint, tap);
   const highlightColor = TOOL_BY_ID[tool].color;
-  const showTop = true;
 
-  // Calques superposés : sol + ombres, PNJ, bâtiments + surcouches, puis effets et nuit.
-  // Le sol et les bâtiments ne se redessinent que pendant un déplacement / zoom
-  // ou quand la carte change. Les bâtiments restent au-dessus des voitures.
+  // Calques superposés : sol + ombres, PNJ, bâtiments + lumières + surcouches, puis effets.
+  // La nuit assombrit chaque calque séparément, ce qui laisse les bâtiments masquer
+  // phares et fenêtres placés derrière eux. Le sol et les bâtiments ne se redessinent
+  // que pendant un déplacement / zoom ou quand la carte change.
   return (
     <GestureDetector gesture={gesture}>
       <View style={styles.root} collapsable={false}>
         <Canvas style={styles.layer} pointerEvents="none">
           <Group transform={transform}>
             <Picture picture={groundPic} />
+            <Rect x={-200} y={-400} width={world.width + 400} height={world.height + 800} color={NIGHT_TINT} opacity={nightOverlay} />
           </Group>
         </Canvas>
         {scene.agents.length > 0 && (
           <Canvas style={styles.layer} pointerEvents="none">
             <Group transform={transform}>
-              <AgentsLayer scene={scene} gridSize={gridSize} camera={camera} clock={clock} rotation={rotation} />
+              <AgentsLayer scene={scene} gridSize={gridSize} camera={camera} clock={clock} night={night} rotation={rotation} />
             </Group>
           </Canvas>
         )}
         <Canvas style={styles.layer} pointerEvents="none">
           <Group transform={transform}>
+            {/* Nuit : bâtiments assombris (srcATop ne touche que les pixels déjà dessinés), puis fenêtres et lampadaires. */}
             <Picture picture={buildingPic} />
+            <Rect x={-200} y={-400} width={world.width + 400} height={world.height + 800} color={NIGHT_TINT} opacity={nightOverlay} blendMode="srcATop" />
+            <Picture picture={lightsPic} />
             {dataPicture && <Picture picture={dataPicture} />}
             {coverage && <Picture picture={coverage} />}
             {highlight && (
@@ -522,27 +561,21 @@ export function IsoMapCanvas() {
             )}
           </Group>
         </Canvas>
-        {showTop && (
-          <Canvas style={styles.layer} pointerEvents="none">
-            <Group transform={transform}>
-              {/* Nuit : voile bleu nuit, puis fenêtres, lampadaires et phares par-dessus. */}
-              <Rect x={-200} y={-400} width={world.width + 400} height={world.height + 800} color="#0a1236" opacity={nightOverlay} />
-              <Group opacity={night}>
-                <Picture picture={lightsPic} />
-              </Group>
-              <EffectsLayer haze={haze} tornado={tornado} clock={clock} gridSize={gridSize} />
-              <AgentsLayer
-                scene={scene}
-                gridSize={gridSize}
-                camera={camera}
-                clock={clock}
-                rotation={rotation}
-                top
-                showMetro={tool === 'metro'}
-              />
-            </Group>
-          </Canvas>
-        )}
+        <Canvas style={styles.layer} pointerEvents="none">
+          <Group transform={transform}>
+            <EffectsLayer haze={haze} tornado={tornado} clock={clock} gridSize={gridSize} />
+            <AgentsLayer
+              scene={scene}
+              gridSize={gridSize}
+              camera={camera}
+              clock={clock}
+              night={night}
+              rotation={rotation}
+              top
+              showMetro={tool === 'metro'}
+            />
+          </Group>
+        </Canvas>
       </View>
     </GestureDetector>
   );

@@ -369,11 +369,12 @@ function SettingsTab({ onClose, onSaveNow, lastSavedAt }: { onClose: () => void;
           <Switch value={settings[t.key]} onValueChange={(v) => setSetting(t.key, v)} trackColor={{ true: theme.positive, false: 'rgba(255,255,255,0.2)' }} />
         </Row>
       ))}
-      <Row label="✨ Qualité">
+      <Text style={styles.rowLabel}>✨ Qualité graphique</Text>
+      <View style={styles.actions}>
         {QUALITIES.map((q) => (
           <Btn key={q.id} small label={q.label} onPress={() => setSetting('quality', q.id)} selected={settings.quality === q.id} />
         ))}
-      </Row>
+      </View>
       <Text style={styles.hint}>En mode Auto, le nombre de véhicules s’adapte pour garder une animation fluide.</Text>
       <Row label="🎓 Tutoriel">
         <Btn small label="Recommencer" onPress={() => { setSetting('tutorial', 0); onClose(); }} />
