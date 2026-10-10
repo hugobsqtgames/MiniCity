@@ -535,8 +535,19 @@ function addRoad(batch: PathBatch, tiles: Tile[], size: number, tile: Tile, orig
     edges[1].on = true;
   }
 
+  const crossroads = edges.filter((e) => e.on).length >= 3;
+
   for (const e of edges) {
-    if (e.on) {
+    if (e.on && crossroads) {
+      // Carrefour : passage piéton (bandes blanches) le long de chaque branche, pas de ligne médiane.
+      for (let k = 0; k < 5; k++) {
+        const s0 = 0.12 + k * 0.16;
+        const s1 = s0 + 0.09;
+        const p0 = lerp(e.a, e.b, s0);
+        const p1 = lerp(e.a, e.b, s1);
+        batch.poly('deco:' + PALETTE.crosswalk, [lerp(p0, center, 0.08), lerp(p1, center, 0.08), lerp(p1, center, 0.3), lerp(p0, center, 0.3)]);
+      }
+    } else if (e.on) {
       // Ligne médiane jaune en tirets : polygones fins du centre vers le milieu de l'arête.
       const m = mid(e.a, e.b);
       for (const [t0, t1] of [

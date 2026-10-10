@@ -13,6 +13,7 @@ export const PALETTE = {
   asphalt: '#7f8c8d',
   curb: '#95a5a6',
   median: '#f1c40f',
+  crosswalk: '#ecf0f1',
 
   pavement: '#bdc3c7',
   parkPath: '#e5d3b3',

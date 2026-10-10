@@ -2,10 +2,11 @@
 
 City-builder isométrique (vibes SimCity 2000) pour mobile, **100 % hors ligne**, jouable dans **Expo Go**.
 
+![Maquettes v3](docs/maquettes/planche-v3.png)
+
+<details><summary>Maquettes précédentes</summary>
+
 ![Maquettes v2](docs/maquettes/planche-v2.png)
-
-<details><summary>Maquettes v1</summary>
-
 ![Maquettes v1](docs/maquettes/planche.png)
 </details>
 
@@ -33,7 +34,10 @@ npm run web           # aperçu navigateur (CanvasKit servi en local, aucun CDN)
    école 🏫, parcs 🌳, métro 🚇 (≥ 2 stations : moins de voitures, plus de valeur). Sélectionner l'outil
    d'un service affiche sa **carte de couverture**.
 6. Les citoyens vivent : voitures 3D en trajet domicile → travail, camions de livraison, bus, patrouilles
-   de police, camions de pompiers vers les incendies, piétons. Leur nombre suit la population.
+   de police, camions de pompiers vers les incendies, ambulances, piétons. Leur nombre suit la population.
+   Chaque carrefour a ses **feux tricolores** et ses passages piétons : les voitures freinent, font la queue
+   au rouge et repartent au vert ; pompiers et ambulances passent en priorité. Avec l'outil Métro, on voit
+   les lignes souterraines et les rames.
 7. Menu ⚙︎ : chômage, satisfaction, criminalité, couverture de chaque service, budget.
 
 ## Architecture
@@ -51,8 +55,10 @@ src/ui/       HUD glassmorphism, barre d'outils, fiche, toast, menu, splash
 - **Raycasting inverse** : `screenToTile` (worklet) annule la caméra puis inverse la projection
   (`gx = dx/W + dy/H`, `gy = dy/H − dx/W`, puis `floor`).
 - **Depth sorting** : row-major de (0,0) vers (N−1,N−1).
-- **PNJ** (`engine/agents.ts`) : itinéraires calculés côté JS quand les routes, la population ou les incidents
-  changent (plus court chemin domicile → travail, patrouilles, pompiers vers les feux), positions interpolées
-  chaque image dans un worklet. Véhicules 3D = boîtes orientées avec élimination des faces cachées, triées
+- **PNJ** (`engine/agents.ts`, `engine/traffic.ts`) : itinéraires calculés côté JS (plus court chemin
+  domicile → travail, patrouilles, pompiers, ambulances), puis **micro-simulation du trafic** sur une période
+  commune multiple du cycle des feux (suivi de véhicule, freinage, arrêt au rouge). Les trajectoires sont
+  enregistrées puis rejouées en boucle dans un worklet, synchronisées avec les feux affichés. Recalcul
+  différé (600 ms) pendant la construction. Véhicules 3D = boîtes orientées avec élimination des faces cachées, triées
   par profondeur. Calques superposés (sol, PNJ, bâtiments, incendies) : seuls PNJ et flammes se redessinent
   à chaque image, et seuls les PNJ visibles à l'écran sont dessinés.

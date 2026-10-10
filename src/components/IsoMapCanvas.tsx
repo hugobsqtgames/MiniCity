@@ -6,20 +6,21 @@ import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { useDerivedValue, useSharedValue, withDecay } from 'react-native-reanimated';
 import { scheduleOnRN } from 'react-native-worklets';
 
-import { agentsSignature, buildAgents, drawAgents, drawFires, type AgentsScene } from '../engine/agents';
+import { agentsSignature, buildAgents, drawAgents, drawFires, drawMetro, type AgentsScene } from '../engine/agents';
 import { getOrigin, getWorldSize, screenToTile } from '../engine/iso';
 import { useMapLayers } from '../engine/mapLayers';
 import { buildCoveragePicture, COLORS, diamondPath } from '../engine/renderer';
 import { COVERAGE_TOOL, TOOL_BY_ID } from '../sim/constants';
 import { computeCoverage } from '../sim/simulation';
+import { useDebounced } from '../hooks/useDebounced';
 import { useGameStore, type Tile } from '../store/useGameStore';
 
 /** Itinéraires des PNJ, recalculés seulement quand les routes ou la population (par paliers) changent. */
 class AgentCache {
   private key = '';
-  private scene: AgentsScene = { agents: [], fires: [] };
+  private scene: AgentsScene = { agents: [], fires: [], lights: [], metro: [] };
   get(tiles: Tile[], size: number, population: number, metroRiders: number): AgentsScene {
-    const key = `${size}:${agentsSignature(tiles, population)}:${Math.floor(metroRiders / 200)}`;
+    const key = `${size}:${agentsSignature(tiles, population)}:${metroRiders > 0 ? Math.floor(Math.log(metroRiders) / Math.log(1.25)) : -1}`;
     if (key !== this.key) {
       this.key = key;
       this.scene = buildAgents(tiles, size, population, metroRiders);
@@ -28,7 +29,7 @@ class AgentCache {
   }
 }
 
-const EMPTY_SCENE: AgentsScene = { agents: [], fires: [] };
+const EMPTY_SCENE: AgentsScene = { agents: [], fires: [], lights: [], metro: [] };
 
 /** En dessous de ce zoom, les PNJ font moins d'un pixel : inutile de les dessiner. */
 const AGENTS_MIN_SCALE = 0.3;
@@ -39,7 +40,19 @@ const AGENTS_MIN_SCALE = 0.3;
  */
 type Camera = { tx: SharedValue<number>; ty: SharedValue<number>; scale: SharedValue<number>; width: number; height: number };
 
-function AgentsLayer({ scene, gridSize, camera, fires }: { scene: AgentsScene; gridSize: number; camera: Camera; fires?: boolean }) {
+function AgentsLayer({
+  scene,
+  gridSize,
+  camera,
+  fires,
+  showMetro = false,
+}: {
+  scene: AgentsScene;
+  gridSize: number;
+  camera: Camera;
+  fires?: boolean;
+  showMetro?: boolean;
+}) {
   const clock = useClock();
   const world = getWorldSize(gridSize);
   const picture = useDerivedValue(() => {
@@ -55,8 +68,10 @@ function AgentsLayer({ scene, gridSize, camera, fires }: { scene: AgentsScene; g
       y1: (camera.height - camera.ty.get()) / s + margin,
     };
     return createPicture((canvas) => {
-      if (fires) drawFires(canvas, scene.fires, now, gridSize, view);
-      else if (visible) drawAgents(canvas, scene, now, gridSize, view);
+      if (fires) {
+        drawFires(canvas, scene.fires, now, gridSize, view);
+        if (showMetro) drawMetro(canvas, scene, now, gridSize);
+      } else if (visible) drawAgents(canvas, scene, now, gridSize, view);
     }, { x: 0, y: 0, ...world });
   });
   return <Picture picture={picture} />;
@@ -94,13 +109,15 @@ export function IsoMapCanvas() {
   const showAgents = useGameStore((s) => s.showAgents);
   const [agentCache] = useState(() => new AgentCache());
   const metroRiders = useGameStore((s) => s.stats.metroRiders);
+  // Le trafic se recalcule une fois la construction terminée (pas à chaque tuile peinte).
+  const agentTiles = useDebounced(tiles, 600);
   const scene = useMemo(
     () => {
-      const full = agentCache.get(tiles, gridSize, population, metroRiders);
+      const full = agentCache.get(agentTiles, gridSize, population, metroRiders);
       // Les incendies restent visibles même quand le trafic est désactivé.
-      return showAgents ? full : { ...EMPTY_SCENE, fires: full.fires };
+      return showAgents ? full : { ...EMPTY_SCENE, fires: full.fires, metro: full.metro };
     },
-    [showAgents, agentCache, tiles, gridSize, population, metroRiders],
+    [showAgents, agentCache, agentTiles, gridSize, population, metroRiders],
   );
 
   // Carte de couverture du service dont l'outil est sélectionné (police, pompiers, métro…).
@@ -214,7 +231,11 @@ export function IsoMapCanvas() {
         {scene.agents.length > 0 && (
           <Canvas style={styles.layer} pointerEvents="none">
             <Group transform={transform}>
-              <AgentsLayer scene={scene} gridSize={gridSize} camera={{ tx, ty, scale, width: screenW, height: screenH }} />
+              <AgentsLayer
+                scene={scene}
+                gridSize={gridSize}
+                camera={{ tx, ty, scale, width: screenW, height: screenH }}
+              />
             </Group>
           </Canvas>
         )}
@@ -232,10 +253,16 @@ export function IsoMapCanvas() {
             )}
           </Group>
         </Canvas>
-        {scene.fires.length > 0 && (
+        {(scene.fires.length > 0 || (tool === 'metro' && scene.metro.length > 0)) && (
           <Canvas style={styles.layer} pointerEvents="none">
             <Group transform={transform}>
-              <AgentsLayer scene={scene} gridSize={gridSize} camera={{ tx, ty, scale, width: screenW, height: screenH }} fires />
+              <AgentsLayer
+                scene={scene}
+                gridSize={gridSize}
+                camera={{ tx, ty, scale, width: screenW, height: screenH }}
+                fires
+                showMetro={tool === 'metro'}
+              />
             </Group>
           </Canvas>
         )}
