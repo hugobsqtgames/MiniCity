@@ -2,10 +2,11 @@
 
 City-builder isométrique (vibes SimCity 2000) pour mobile, **100 % hors ligne**, jouable dans **Expo Go**.
 
-![Maquettes v3](docs/maquettes/planche-v3.png)
+![Maquettes v4](docs/maquettes/planche-v4.jpg)
 
 <details><summary>Maquettes précédentes</summary>
 
+![Maquettes v3](docs/maquettes/planche-v3.png)
 ![Maquettes v2](docs/maquettes/planche-v2.png)
 ![Maquettes v1](docs/maquettes/planche.png)
 </details>
@@ -16,6 +17,7 @@ City-builder isométrique (vibes SimCity 2000) pour mobile, **100 % hors ligne**
 npm install
 npx expo start        # puis scanner le QR code avec Expo Go
 npm run web           # aperçu navigateur (CanvasKit servi en local, aucun CDN)
+npm test              # tests automatisés (jest-expo)
 ```
 
 ## Jouer
@@ -23,42 +25,62 @@ npm run web           # aperçu navigateur (CanvasKit servi en local, aucun CDN)
 | Geste | Mode Explorer 🔍 | Mode construction |
 |---|---|---|
 | 1 doigt glissé | déplacer la carte | peindre (routes, zones, bulldozer) |
-| 1 toucher | inspecter la tuile | construire |
+| 1 toucher | inspecter la tuile, ou un citoyen | construire |
 | 2 doigts | zoomer / déplacer | zoomer / déplacer |
 
-1. Tracer des routes, puis zoner R (vert), C (bleu), I (jaune) à moins de 3 cases d'une route.
-2. Poser une centrale : le courant suit routes et zones contiguës jusqu'à 15 cases. ⚡ rouge = pas de courant.
-3. Laisser tourner : la demande RCI (jauges du HUD) fait pousser les bâtiments du niveau 1 au niveau 3.
-4. Poser un **château d'eau** 💧 (relié au courant) : sans eau, les bâtiments restent au niveau 1.
-5. Les **services** élargissent la ville : police 🚓 (criminalité), pompiers 🚒 (incendies), hôpital 🏥,
-   école 🏫, parcs 🌳, métro 🚇 (≥ 2 stations : moins de voitures, plus de valeur). Sélectionner l'outil
-   d'un service affiche sa **carte de couverture**.
-6. Les citoyens vivent : voitures 3D en trajet domicile → travail, camions de livraison, bus, patrouilles
-   de police, camions de pompiers vers les incendies, ambulances, piétons. Leur nombre suit la population.
-   Chaque carrefour a ses **feux tricolores** et ses passages piétons : les voitures freinent, font la queue
-   au rouge et repartent au vert ; pompiers et ambulances passent en priorité. Avec l'outil Métro, on voit
-   les lignes souterraines et les rames.
-7. Menu ⚙︎ : chômage, satisfaction, criminalité, couverture de chaque service, budget.
+Un **tutoriel** guide les premiers pas (rue → maisons → centrale → eau → emplois). Colonne de droite :
+**annuler / rétablir** ↶ ↷, **rotation** de la vue par quarts de tour ⟲ ⟳ et **vues de données** 🗺️
+(trafic, pollution, criminalité, valeur foncière, déchets).
+
+1. **Carte 100×100** générée à chaque partie : rivière, lacs, plages, forêts. Les routes passent en **pont**
+   au-dessus de l'eau (×4), la forêt est défrichée automatiquement, un château d'eau au bord d'un lac coûte moitié prix.
+2. **Routes** : rue, **avenue** (×2,5 de capacité) et **autoroute** (rapide, ne dessert pas les zones).
+   Les habitants vont travailler à l'emploi le plus proche en temps de trajet : les **embouteillages** allongent
+   les trajets, font baisser la valeur foncière et fâchent les habitants.
+3. Zoner R / C / I, poser une centrale ⚡ et un château d'eau 💧 : la demande RCI fait pousser la ville.
+4. **Services** (police, pompiers, hôpital, école, parcs, métro, **bus** avec arrêts et voyageurs qui attendent)
+   et **déchets** : décharge (se remplit), incinérateur (pollue), recyclage. Sans ramassage, les ordures
+   s'entassent et les quartiers se vident.
+5. **Pollution** visible (nappes de smog) : industries, centrales, incinérateurs et bouchons.
+6. **Budget** (menu ⚙︎) : impôts séparés R / C / I, financement de chaque service de 0 à 120 % (sous 40 % :
+   **grève**), **ordonnances** (tri obligatoire, casinos, couvre-feu, transports gratuits…).
+7. **Monuments** débloqués par la population : stade (3 000 hab.), université (6 000), aéroport (10 000),
+   tour (16 000). Ils rapportent du tourisme.
+8. **Catastrophes** (interrupteur dans le menu, ou déclenchées à la main) : séisme (la caméra tremble),
+   inondation, tornade (entonnoir animé), panne de centrale.
+9. **Jour / nuit** : fenêtres allumées, lampadaires, phares et feux arrière, projecteurs du stade.
+10. **Citoyens** : on peut toucher une voiture ou un piéton pour lire sa fiche (nom, âge, métier, humeur, citation).
+    Des bulles d'humeur apparaissent au-dessus des passants (bouchons, insécurité, pollution, ordures, impôts, chômage).
+11. **Journal de la ville** et **graphiques** d'historique (population, trésorerie, satisfaction, criminalité, pollution).
+12. **Sons et musique** synthétisés et embarqués (`scripts/generate-sounds.mjs`), désactivables.
+13. **Qualité automatique** : la fluidité est mesurée et la densité de PNJ s'adapte. Tablette et paysage
+    gérés (menu en panneau latéral).
 
 ## Architecture
 
 ```
-src/engine/   projection iso 2:1 (iso.ts), rendu Skia (renderer.ts), cache par bandes (mapLayers.ts)
-src/sim/      simulation pure : courant + eau (flood fill), services, criminalité, incendies, RCI, budget
-src/store/    Zustand (useGameStore) + persistance AsyncStorage
-src/hooks/    game loop (1 tick = 1 mois = 2 s) et autoSave (15 s + passage en arrière-plan)
-src/ui/       HUD glassmorphism, barre d'outils, fiche, toast, menu, splash
+src/engine/   projection iso 2:1 (iso.ts), rendu Skia (renderer.ts), blocs + culling (mapLayers.ts),
+              terrain (terrain.ts), rotation (rotation.ts), PNJ (agents.ts), feux (traffic.ts)
+src/sim/      simulation pure : courant + eau, trafic (Dijkstra), pollution, déchets, services,
+              criminalité, incendies, catastrophes, RCI, budget, ordonnances
+src/store/    Zustand (useGameStore, annuler/rétablir) + persistance AsyncStorage (sauvegarde v2, réglages)
+src/hooks/    game loop (1 tick = 1 mois = 2 s), autoSave (15 s + arrière-plan), qualité automatique
+src/audio/    sons et musique hors ligne (expo-audio)
+src/ui/       HUD, barre d'outils, commandes de carte, menu à onglets, graphiques, tutoriel, fiches
+src/__tests__ tests jest (moteur, simulation, outils, sauvegarde, PNJ)
 ```
 
-- **Rendu** : la carte est enregistrée en `SkPicture` par bandes de 10 lignes (sol, ombres, bâtiments).
-  Pan/zoom ne touchent que la matrice caméra (thread UI) ; une modification ne ré-enregistre que les bandes concernées.
+- **Rendu** : la carte est enregistrée en `SkPicture` par blocs de 10×10 tuiles (sol, ombres, bâtiments, lumières).
+  Pan/zoom ne touchent que la matrice caméra (thread UI) et seuls les blocs visibles sont rejoués (culling) ;
+  une modification ne ré-enregistre que les blocs concernés. La rotation réutilise les tuiles non modifiées.
 - **Raycasting inverse** : `screenToTile` (worklet) annule la caméra puis inverse la projection
   (`gx = dx/W + dy/H`, `gy = dy/H − dx/W`, puis `floor`).
 - **Depth sorting** : row-major de (0,0) vers (N−1,N−1).
 - **PNJ** (`engine/agents.ts`, `engine/traffic.ts`) : itinéraires calculés côté JS (plus court chemin
   domicile → travail, patrouilles, pompiers, ambulances), puis **micro-simulation du trafic** sur une période
-  commune multiple du cycle des feux (suivi de véhicule, freinage, arrêt au rouge). Les trajectoires sont
+  commune multiple du cycle des feux (suivi de véhicule, freinage, arrêt au rouge, priorité dans le carrefour,
+  feux piétons, arrêts de bus, voies multiples sur avenues et autoroutes). Les trajectoires sont
   enregistrées puis rejouées en boucle dans un worklet, synchronisées avec les feux affichés. Recalcul
-  différé (600 ms) pendant la construction. Véhicules 3D = boîtes orientées avec élimination des faces cachées, triées
+  différé (600 ms) pendant la construction, découpé en tranches de 6 ms pour ne jamais bloquer les gestes. Véhicules 3D = boîtes orientées avec élimination des faces cachées, triées
   par profondeur. Calques superposés (sol, PNJ, bâtiments, incendies) : seuls PNJ et flammes se redessinent
   à chaque image, et seuls les PNJ visibles à l'écran sont dessinés.
