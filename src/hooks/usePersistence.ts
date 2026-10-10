@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { AppState } from 'react-native';
 
-import { loadGame, saveGame } from '../store/persistence';
+import { initAudio, setMusicEnabled, setSfxEnabled } from '../audio/sound';
+import { loadGame, loadSettings, saveGame } from '../store/persistence';
 import { useGameStore } from '../store/useGameStore';
 
 const AUTOSAVE_MS = 15000;
@@ -19,13 +20,13 @@ export function usePersistence() {
   useEffect(() => {
     let cancelled = false;
     const started = Date.now();
-    loadGame()
-      .catch(() => null)
-      .then(async (save) => {
-        const wait = MIN_SPLASH_MS - (Date.now() - started);
-        if (wait > 0) await new Promise((r) => setTimeout(r, wait));
-        if (!cancelled) useGameStore.getState().hydrate(save);
-      });
+    Promise.all([loadGame().catch(() => null), loadSettings(), initAudio()]).then(async ([save, settings]) => {
+      const wait = MIN_SPLASH_MS - (Date.now() - started);
+      if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+      if (cancelled) return;
+      useGameStore.getState().hydrateSettings(settings);
+      useGameStore.getState().hydrate(save);
+    });
     return () => {
       cancelled = true;
     };
@@ -53,6 +54,19 @@ export function usePersistence() {
       sub.remove();
     };
   }, [hydrated, autoSave]);
+
+  // Sons et musique suivent les réglages ; la musique se coupe en arrière-plan.
+  const music = useGameStore((s) => s.settings.music);
+  const sounds = useGameStore((s) => s.settings.sounds);
+  useEffect(() => {
+    setSfxEnabled(sounds);
+  }, [sounds]);
+  useEffect(() => {
+    if (!hydrated) return;
+    setMusicEnabled(music);
+    const sub = AppState.addEventListener('change', (s) => setMusicEnabled(music && s === 'active'));
+    return () => sub.remove();
+  }, [hydrated, music]);
 
   return { hydrated, lastSavedAt, saveNow: autoSave };
 }

@@ -112,5 +112,74 @@ export function createDemoMap(size: number): Tile[] {
   // Quelques parcelles de terre battue en périphérie.
   for (let y = 38; y <= 41; y++) for (let x = 12; x <= 16; x++) if (rand(x, y) > 0.35) set(x, y, 'DIRT');
 
+  // Grands axes : deux avenues qui se croisent au centre-ville.
+  for (let x = 8; x <= 42; x++) set(x, 20, 'AVENUE');
+  for (let y = 8; y <= 36; y++) set(28, y, 'AVENUE');
+  for (let x = 8; x <= 42; x++) set(x, 28, 'AVENUE');
+  for (let y = 8; y <= 36; y++) set(18, y, 'AVENUE');
+
+  // Rivière au sud, bordée de plages, franchie par deux ponts.
+  for (let x = 0; x < size; x++) {
+    const mid = 44 + Math.round(Math.sin(x / 6) * 1.2);
+    for (let y = mid - 1; y <= mid + 1; y++) set(x, y, 'LAKE');
+    for (const y of [mid - 2, mid + 2]) if (get(x, y).type === 'GRASS' && rand(x, y) < 0.8) set(x, y, 'SAND');
+  }
+  // Lac au nord-ouest.
+  for (let y = 0; y < 9; y++) for (let x = 0; x < 7; x++) if (Math.hypot(x - 2.5, y - 3.5) < 3.6) set(x, y, 'LAKE');
+  for (const bx of [18, 38]) {
+    for (let y = 37; y < size; y++) {
+      const t = get(bx, y);
+      if (t.type === 'LAKE') {
+        t.type = 'ROAD';
+        t.lake = true;
+      } else if (t.type !== 'POWER' && t.type !== 'WATER') set(bx, y, 'ROAD');
+    }
+  }
+
+  // Autoroute de contournement à l'est, reliée aux rues.
+  for (let y = 0; y < 43; y++) set(46, y, 'HIGHWAY');
+  for (let x = 43; x <= 45; x++) {
+    set(x, 10, 'ROAD');
+    set(x, 28, 'ROAD');
+  }
+  for (let x = 38; x <= 42; x++) set(x, 28, 'ROAD');
+
+  // Forêts en lisière.
+  for (let y = 10; y < 40; y++) for (let x = 0; x < 6; x++) if (get(x, y).type === 'GRASS' && rand(x * 3, y) < 0.7) set(x, y, 'FOREST');
+  for (let y = 0; y < 5; y++) for (let x = 30; x < 45; x++) if (get(x, y).type === 'GRASS' && rand(x, y * 5) < 0.6) set(x, y, 'FOREST');
+
+  // Arrêts de bus le long des rues desservant les quartiers.
+  for (const [x, y] of [
+    [17, 16],
+    [27, 15],
+    [19, 25],
+    [29, 24],
+    [17, 31],
+    [37, 17],
+  ]) {
+    set(x, y, 'BUSSTOP');
+  }
+
+  // Gestion des déchets en périphérie.
+  for (let y = 38; y <= 41; y++) for (let x = 40; x <= 44; x++) set(x, y, 'DIRT');
+  set(41, 38, 'LANDFILL');
+  get(41, 38).garbage = 5;
+  set(42, 38, 'LANDFILL');
+  get(42, 38).garbage = 2;
+  set(43, 38, 'RECYCLING');
+  set(41, 39, 'INCINERATOR');
+  for (let x = 39; x <= 44; x++) set(x, 37, 'ROAD');
+  // Incinérateurs et tri au cœur de la zone industrielle : la collecte couvre toute la ville.
+  set(14, 32, 'INCINERATOR');
+  set(24, 33, 'INCINERATOR');
+  set(20, 31, 'RECYCLING');
+  set(31, 10, 'LANDFILL');
+
+  // Monuments.
+  set(33, 23, 'STADIUM');
+  set(24, 17, 'LANDMARK');
+  set(10, 39, 'UNIVERSITY');
+  for (let x = 8; x <= 11; x++) set(x, 38, 'ROAD');
+
   return tiles;
 }

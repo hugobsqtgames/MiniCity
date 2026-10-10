@@ -1,16 +1,26 @@
 import { useEffect } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import Animated, { useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { TOOLS, type ToolDef } from '../sim/constants';
+import { isMonument } from '../engine/map';
+import { MONUMENT_UNLOCK, TOOLS, type ToolDef, type ToolGroup } from '../sim/constants';
 import { useGameStore } from '../store/useGameStore';
-import { formatMoney, theme } from './theme';
+import { formatMoney, formatNumber, theme } from './theme';
 import { Glass } from './Glass';
 
 export const TOOLBAR_HEIGHT = 112;
 
-function ToolButton({ tool, active, onPress }: { tool: ToolDef; active: boolean; onPress: () => void }) {
+const GROUP_LABELS: Record<ToolGroup, string> = {
+  base: 'Outils',
+  zones: 'Routes & zones',
+  networks: 'Réseaux',
+  services: 'Services',
+  waste: 'Déchets',
+  monuments: 'Monuments',
+};
+
+function ToolButton({ tool, active, locked, onPress }: { tool: ToolDef; active: boolean; locked: string | null; onPress: () => void }) {
   const lift = useSharedValue(active ? 1 : 0);
   useEffect(() => {
     lift.value = withSpring(active ? 1 : 0, { damping: 14, stiffness: 220 });
@@ -25,11 +35,13 @@ function ToolButton({ tool, active, onPress }: { tool: ToolDef; active: boolean;
     <Pressable onPress={onPress} accessibilityRole="button" accessibilityLabel={tool.label} accessibilityState={{ selected: active }}>
       <Animated.View style={[styles.tool, active && { borderColor: tool.color, backgroundColor: 'rgba(255,255,255,0.16)' }, style]}>
         <View style={[styles.swatch, { backgroundColor: tool.color }]} />
-        <Text style={styles.icon}>{tool.icon}</Text>
+        <Text style={[styles.icon, locked !== null && styles.lockedIcon]}>{tool.icon}</Text>
         <Text style={styles.label} numberOfLines={1}>
           {tool.label}
         </Text>
-        <Text style={styles.cost}>{tool.cost > 0 ? formatMoney(tool.cost) : ' '}</Text>
+        <Text style={styles.cost} numberOfLines={1}>
+          {locked === 'construit' ? '✓ construit' : locked !== null ? `🔒 ${locked}` : tool.cost > 0 ? formatMoney(tool.cost) : ' '}
+        </Text>
       </Animated.View>
     </Pressable>
   );
@@ -39,16 +51,39 @@ export function Toolbar() {
   const insets = useSafeAreaInsets();
   const tool = useGameStore((s) => s.tool);
   const setTool = useGameStore((s) => s.setTool);
+  const showToast = useGameStore((s) => s.showToast);
+  const population = useGameStore((s) => s.stats.population);
+  const tiles = useGameStore((s) => s.tiles);
+  const { width } = useWindowDimensions();
+  // Monuments : verrouillés sous un seuil de population, un seul exemplaire chacun.
+  const built = new Set(tiles.filter((t) => isMonument(t.type)).map((t) => t.type));
+  const lockOf = (t: ToolDef): string | null => {
+    if (!t.places || !isMonument(t.places)) return null;
+    if (built.has(t.places)) return 'construit';
+    const need = MONUMENT_UNLOCK[t.places];
+    return population < need ? `${need / 1000}k hab.` : null;
+  };
 
   return (
-    <View pointerEvents="box-none" style={[styles.wrap, { bottom: insets.bottom + 8 }]}>
+    <View pointerEvents="box-none" style={[styles.wrap, { bottom: insets.bottom + 8 }, width >= 700 && styles.wrapWide]}>
       <Glass intensity={45} style={styles.glass}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.scroll}>
           {TOOLS.map((t, i) => (
             <View key={t.id} style={styles.item}>
               {/* Séparateur entre familles d'outils : base | zones | réseaux | services. */}
               {i > 0 && TOOLS[i - 1].group !== t.group && <View style={styles.divider} />}
-              <ToolButton tool={t} active={t.id === tool} onPress={() => setTool(t.id)} />
+              {(i === 0 || TOOLS[i - 1].group !== t.group) && <Text style={styles.groupLabel} numberOfLines={1}>{GROUP_LABELS[t.group]}</Text>}
+              <ToolButton
+                tool={t}
+                active={t.id === tool}
+                locked={lockOf(t)}
+                onPress={() => {
+                  const lock = lockOf(t);
+                  if (lock === 'construit') showToast(`${t.icon} ${t.label} : un seul exemplaire par ville`);
+                  else if (lock && t.places && isMonument(t.places)) showToast(`🔒 ${t.label} : débloqué à ${formatNumber(MONUMENT_UNLOCK[t.places])} habitants`);
+                  else setTool(t.id);
+                }}
+              />
             </View>
           ))}
         </ScrollView>
@@ -59,6 +94,7 @@ export function Toolbar() {
 
 const styles = StyleSheet.create({
   wrap: { position: 'absolute', left: theme.gutter, right: theme.gutter },
+  wrapWide: { left: 120, right: 120 },
   glass: {
     borderRadius: theme.radius,
     overflow: 'hidden',
@@ -67,6 +103,18 @@ const styles = StyleSheet.create({
   },
   scroll: { paddingHorizontal: 10, paddingTop: 22, paddingBottom: 10, gap: 8 },
   item: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  groupLabel: {
+    position: 'absolute',
+    top: -19,
+    left: 4,
+    width: 220,
+    color: theme.textDim,
+    fontSize: 10,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+  },
+  lockedIcon: { opacity: 0.35 },
   divider: { width: 1, height: 56, backgroundColor: 'rgba(255,255,255,0.18)', marginHorizontal: 2 },
   tool: {
     width: 76,

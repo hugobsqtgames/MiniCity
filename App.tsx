@@ -7,12 +7,15 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { IsoMapCanvas } from './src/components/IsoMapCanvas';
 import { useGameLoop } from './src/hooks/useGameLoop';
 import { usePersistence } from './src/hooks/usePersistence';
+import { CitizenCard } from './src/ui/CitizenCard';
 import { Hud } from './src/ui/Hud';
+import { MapControls } from './src/ui/MapControls';
 import { MenuSheet } from './src/ui/MenuSheet';
 import { SplashScreen } from './src/ui/SplashScreen';
 import { TileInfo } from './src/ui/TileInfo';
 import { Toast } from './src/ui/Toast';
 import { Toolbar } from './src/ui/Toolbar';
+import { Tutorial } from './src/ui/Tutorial';
 
 function Game() {
   const { hydrated, lastSavedAt, saveNow } = usePersistence();
@@ -26,7 +29,10 @@ function Game() {
       {hydrated && (
         <>
           <Hud onOpenMenu={() => setMenuOpen(true)} />
+          <Tutorial />
+          <MapControls />
           <TileInfo />
+          <CitizenCard />
           <Toast />
           <Toolbar />
         </>

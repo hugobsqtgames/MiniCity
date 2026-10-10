@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import Animated, { useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -47,10 +47,11 @@ export function Hud({ onOpenMenu }: { onOpenMenu: () => void }) {
   const togglePause = useGameStore((s) => s.togglePause);
   const setSpeed = useGameStore((s) => s.setSpeed);
 
+  const { width } = useWindowDimensions();
   const cycleSpeed = () => setSpeed(speed === 3 ? 1 : ((speed + 1) as 2 | 3));
 
   return (
-    <View pointerEvents="box-none" style={[styles.wrap, { top: insets.top + 6 }]}>
+    <View pointerEvents="box-none" style={[styles.wrap, { top: insets.top + 6, left: insets.left + theme.gutter }, width >= 700 && styles.wrapWide]}>
       <Glass intensity={45} style={styles.glass}>
         <View style={styles.left}>
           <View style={styles.row}>
@@ -93,6 +94,7 @@ export function Hud({ onOpenMenu }: { onOpenMenu: () => void }) {
 
 const styles = StyleSheet.create({
   wrap: { position: 'absolute', left: theme.gutter, right: theme.gutter },
+  wrapWide: { right: undefined, width: 540 },
   glass: {
     flexDirection: 'row',
     borderRadius: theme.radius,
