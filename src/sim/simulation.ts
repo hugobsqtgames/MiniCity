@@ -1,6 +1,7 @@
 import {
   isFacility,
   isLogistics,
+  isRail,
   isPlant,
   isRoadType,
   isVenue,
@@ -8,6 +9,7 @@ import {
   MONUMENT_TYPES,
   SERVICE_TYPES,
   servesZones,
+  LINE_TRAM,
   type MonumentType,
   type ServiceType,
   type Tile,
@@ -21,6 +23,10 @@ import {
   EXPORT_NEEDED_AT,
   fundingOf,
   GARBAGE_PER_LEVEL,
+  HOTEL_ROOMS,
+  PARKING_NEEDED_AT,
+  RESORT_VISITORS,
+  SPEND_PER_VISITOR,
   INCOME_PER_CITIZEN,
   INCOME_PER_JOB,
   JOBS_C,
@@ -47,11 +53,13 @@ import {
   type Ordinances,
   type Taxes,
 } from './constants';
+import { aLieu, districtMap } from './districts';
 import { applyPower, computeGrid } from './power';
 
 export type Demand = { r: number; c: number; i: number };
 
-export type Coverage = Record<ServiceType, Float32Array>;
+/** Couverture par service, plus le tramway (TRAM) et l'enseignement supérieur (UNI). */
+export type Coverage = Record<ServiceType | 'TRAM' | 'UNI', Float32Array>;
 
 /** Politique municipale : taxes, budget des services, ordonnances. */
 export type Policy = { taxes: Taxes; funding: Funding; ordinances: Ordinances };
@@ -63,7 +71,14 @@ export type CityMaps = {
   traffic: Float32Array;
   pollution: Float32Array;
   crime: Float32Array;
+  /** Pollution de l'eau (0-1) : lacs et rives. */
+  water: Float32Array;
+  /** Épidémie en cours (0-1) par tuile. */
+  health: Float32Array;
 };
+
+/** Épidémie : quartier touché, gravité (0-100), durée écoulée. */
+export type Epidemic = { district: number; severity: number; months: number };
 
 export type CityStats = {
   population: number;
@@ -107,6 +122,24 @@ export type CityStats = {
   exports: { jobs: number; capacity: number; connected: number };
   /** Événements du mois (matchs, concerts, festivals…) : bonus de satisfaction. */
   eventBonus: number;
+  /** Niveau d'éducation moyen des habitants (0-100) : école 40 %, lycée 35 %, université 25 %. */
+  educationLevel: number;
+  /** Emplois industriels par spécialité : classique, agriculture, bois, haute technologie. */
+  specJobs: [number, number, number, number];
+  /** Pollution moyenne des lacs (0-100). */
+  waterPollution: number;
+  /** Touristes accueillis ce mois-ci, et ceux qui ont trouvé un hôtel. */
+  tourists: number;
+  hotelGuests: number;
+  /** Usagers du tramway et du train. */
+  tramRiders: number;
+  trainRiders: number;
+  /** Commerces bloqués au niveau 2 faute de parking. */
+  parkingShortage: number;
+  /** Gravité de l'épidémie en cours (0 si aucune). */
+  epidemic: number;
+  /** Gares reliées entre elles par la voie ferrée. */
+  linkedStations: number;
 };
 
 export type Weather = 'clear' | 'cloudy' | 'rain' | 'storm' | 'fog' | 'snow' | 'heat';
@@ -181,7 +214,7 @@ export function planEvents(tiles: Tile[], month: number, weather: Weather, rando
   return out;
 }
 
-export type DisasterKind = 'earthquake' | 'flood' | 'tornado' | 'blackout' | 'meltdown';
+export type DisasterKind = 'earthquake' | 'flood' | 'tornado' | 'blackout' | 'meltdown' | 'wildfire' | 'meteor' | 'monster' | 'epidemic';
 export type DisasterEvent = { kind: DisasterKind; x: number; y: number; path?: [number, number][]; damage: number };
 
 export type NewsItem = { icon: string; text: string };
@@ -213,6 +246,10 @@ export type SimInput = {
   month?: number;
   /** Lieux où le maire a organisé un événement ce mois-ci. */
   forcedEvents?: { x: number; y: number }[];
+  /** Catastrophes « fun » (météorite, monstre) autorisées au hasard. */
+  funDisasters?: boolean;
+  /** Épidémie en cours. */
+  epidemic?: Epidemic | null;
 };
 
 export type SimOutput = {
@@ -228,6 +265,7 @@ export type SimOutput = {
   cityEvents: CityEvent[];
   /** Analyse de fin de mois (pour les conseillers et les quartiers). */
   analysis: Analysis;
+  epidemic: Epidemic | null;
 };
 
 /** Nombre maximal de bâtiments qui évoluent par mois : la ville pousse progressivement. */
@@ -263,7 +301,11 @@ const neighbours4 = (i: number, size: number, n: number) => {
  * l'éducation sur un grand rayon.
  */
 export function computeCoverage(tiles: Tile[], size: number, funding: Funding = DEFAULT_FUNDING): Coverage {
-  const cov = Object.fromEntries(SERVICE_TYPES.map((s) => [s, new Float32Array(size * size)])) as Coverage;
+  const cov = Object.fromEntries([...SERVICE_TYPES, 'TRAM', 'UNI'].map((s) => [s, new Float32Array(size * size)])) as Coverage;
+  const stations = connectedStations(tiles, size);
+  // Tramway : une ligne d'au moins 4 tuiles dessert ses abords (rayon 3).
+  const tram = tiles.filter((t) => t.type === 'AVENUE' && t.line & LINE_TRAM);
+  const transportF = fundingFactor(funding, 'transport');
   const stamp = (map: Float32Array, cx: number, cy: number, radius: number, strength: number) => {
     for (let dy = -radius; dy <= radius; dy++) {
       for (let dx = -radius; dx <= radius; dx++) {
@@ -282,19 +324,105 @@ export function computeCoverage(tiles: Tile[], size: number, funding: Funding = 
     if (t.flood > 0 || t.rad > 0) continue;
     if (t.type === 'UNIVERSITY' && t.powered) {
       stamp(cov.SCHOOL, t.x, t.y, MONUMENT_RADIUS.UNIVERSITY, fundingFactor(funding, 'education'));
+      stamp(cov.UNI, t.x, t.y, MONUMENT_RADIUS.UNIVERSITY, fundingFactor(funding, 'education'));
       continue;
     }
+    // Une gare isolée (sans autre gare reliée par la voie ferrée) ne sert à rien.
+    if (t.type === 'STATION' && !stations.has(t.y * size + t.x)) continue;
     const type = t.type as ServiceType;
     const radius = SERVICE_RADIUS[type];
     if (!radius) continue;
-    const needsPower = type !== 'PARK' && type !== 'BUSSTOP';
+    const needsPower = type !== 'PARK' && type !== 'BUSSTOP' && type !== 'PARKING';
     if (needsPower && !t.powered) continue;
     if (type === 'LANDFILL' && t.garbage >= 9) continue; // décharge pleine
     const strength = fundingFactor(funding, fundingOf(type));
     if (strength <= 0) continue;
     stamp(cov[type], t.x, t.y, radius, strength);
   }
+  if (tram.length >= 4 && transportF > 0) for (const t of tram) if (t.flood === 0) stamp(cov.TRAM, t.x, t.y, 3, transportF);
   return cov;
+}
+
+/** Gares reliées à au moins une autre gare par la voie ferrée (indices de tuiles). */
+export function connectedStations(tiles: Tile[], size: number): Set<number> {
+  const n = tiles.length;
+  const comp = new Int32Array(n).fill(-1);
+  const ok = new Set<number>();
+  const stack: number[] = [];
+  let id = 0;
+  for (let i = 0; i < n; i++) {
+    if (tiles[i].type !== 'STATION' || comp[i] >= 0) continue;
+    const found: number[] = [];
+    comp[i] = id;
+    stack.push(i);
+    while (stack.length) {
+      const j = stack.pop()!;
+      if (tiles[j].type === 'STATION') found.push(j);
+      for (const nb of neighbours4(j, size, n)) {
+        if (nb < 0 || comp[nb] >= 0 || !isRail(tiles[nb])) continue;
+        comp[nb] = id;
+        stack.push(nb);
+      }
+    }
+    if (found.length >= 2) for (const s of found) ok.add(s);
+    id++;
+  }
+  return ok;
+}
+
+/** Niveau d'éducation d'une tuile (0-1) : école 40 %, lycée 35 %, université 25 %. */
+export const educationAt = (cov: Coverage, i: number) => Math.min(1, cov.SCHOOL[i] * 0.4 + cov.HIGHSCHOOL[i] * 0.35 + cov.UNI[i] * 0.25);
+
+/**
+ * Pollution de l'eau : les eaux usées des quartiers non raccordés à une station
+ * d'épuration et les rejets industriels se déversent dans les lacs voisins.
+ */
+export function computeWaterPollution(tiles: Tile[], size: number, cov: Coverage): Float32Array {
+  const n = tiles.length;
+  const lake = new Float32Array(n);
+  const R = 6;
+  let any = false;
+  for (const t of tiles) if (t.type === 'LAKE') any = true;
+  if (!any) return lake;
+  for (const t of tiles) {
+    if (!isZone(t.type) || t.density === 0) continue;
+    const i = t.y * size + t.x;
+    const treated = cov.TREATMENT[i];
+    const ind = t.type === 'I' ? (t.spec === 3 ? 0.5 : t.spec === 1 ? 2 : 3) : 0.6;
+    const load = ind * t.density * (1 - treated * 0.9);
+    if (load <= 0) continue;
+    for (let dy = -R; dy <= R; dy++) {
+      for (let dx = -R; dx <= R; dx++) {
+        const x = t.x + dx;
+        const y = t.y + dy;
+        if (x < 0 || y < 0 || x >= size || y >= size) continue;
+        const j = y * size + x;
+        if (tiles[j].type !== 'LAKE') continue;
+        const d = Math.hypot(dx, dy);
+        if (d <= R) lake[j] += load * (1 - d / (R + 1));
+      }
+    }
+  }
+  // Normalisation, puis les rives prennent la pollution du lac le plus sale à 2 cases.
+  const out = new Float32Array(n);
+  for (let i = 0; i < n; i++) out[i] = Math.min(1, lake[i] / 25);
+  for (let i = 0; i < n; i++) {
+    if (tiles[i].type === 'LAKE') continue;
+    const x = i % size;
+    const y = (i - x) / size;
+    let m = 0;
+    for (let dy = -2; dy <= 2; dy++) {
+      for (let dx = -2; dx <= 2; dx++) {
+        const nx = x + dx;
+        const ny = y + dy;
+        if (nx < 0 || ny < 0 || nx >= size || ny >= size) continue;
+        const j = ny * size + nx;
+        if (tiles[j].type === 'LAKE' && out[j] > m) m = out[j];
+      }
+    }
+    out[i] = m * 0.8;
+  }
+  return out;
 }
 
 /** Accès routier : BFS multi-sources depuis les routes qui desservent les zones (rue, avenue). */
@@ -484,6 +612,9 @@ export function computeTraffic(tiles: Tile[], size: number, transit: Float32Arra
   return { congestion, commute, jobless, parent, homes };
 }
 
+/** Pollution par niveau d'une usine selon sa spécialité (classique, agriculture, bois, haute technologie). */
+const SPEC_POLLUTION = [7, 2, 4, 1.5];
+
 /** Pollution émise par l'industrie, les centrales, l'incinérateur, l'aéroport et les bouchons. */
 export function computePollution(
   tiles: Tile[],
@@ -505,7 +636,7 @@ export function computePollution(
     }
   };
   for (const t of tiles) {
-    if (t.type === 'I' && t.density > 0) emit(t.x, t.y, 7 * t.density, 5);
+    if (t.type === 'I' && t.density > 0) emit(t.x, t.y, SPEC_POLLUTION[t.spec] * t.density, 5);
     else if (isPlant(t.type) && t.flood === 0 && PLANT_POLLUTION[t.type] > 0) emit(t.x, t.y, PLANT_POLLUTION[t.type] * (ordinances.energy ? 0.65 : 1), 6);
     else if (t.type === 'PORT') emit(t.x, t.y, 9, 4);
     else if (t.type === 'INCINERATOR' && t.powered) emit(t.x, t.y, 18, 6);
@@ -541,8 +672,8 @@ function transitShares(tiles: Tile[], cov: Coverage, ordinances: Ordinances): Fl
   const bonus = ordinances.freeTransit ? 1.35 : 1;
   const share = new Float32Array(tiles.length);
   for (let i = 0; i < tiles.length; i++) {
-    const s = (metroOk ? 0.35 * cov.METRO[i] : 0) + (busOk ? 0.22 * cov.BUSSTOP[i] : 0);
-    share[i] = Math.min(0.7, s * bonus);
+    const s = (metroOk ? 0.35 * cov.METRO[i] : 0) + (busOk ? 0.22 * cov.BUSSTOP[i] : 0) + 0.28 * cov.TRAM[i] + 0.3 * cov.STATION[i];
+    share[i] = Math.min(0.75, s * bonus);
   }
   return share;
 }
@@ -606,7 +737,7 @@ function computeExports(tiles: Tile[], size: number, transportF: number) {
 }
 
 /** Analyse complète de la ville (statistiques + cartes), sans la faire évoluer. */
-export function analyzeCity(tiles: Tile[], size: number, policy: Policy = DEFAULT_POLICY, month = 3, cityEvents: CityEvent[] = []): Analysis {
+export function analyzeCity(tiles: Tile[], size: number, policy: Policy = DEFAULT_POLICY, month = 3, cityEvents: CityEvent[] = [], epidemic: Epidemic | null = null): Analysis {
   const { funding, ordinances, taxes } = policy;
   const cov = computeCoverage(tiles, size, funding);
   const grid = computeGrid(tiles, size, month);
@@ -615,6 +746,18 @@ export function analyzeCity(tiles: Tile[], size: number, policy: Policy = DEFAUL
   const traffic = computeTraffic(tiles, size, transit);
   const pollution = computePollution(tiles, size, ordinances, traffic.congestion);
   const crimeMap = new Float32Array(tiles.length);
+  const waterMap = computeWaterPollution(tiles, size, cov);
+  const healthMap = new Float32Array(tiles.length);
+  if (epidemic && epidemic.severity > 0) {
+    const ids = districtMap(size).ids;
+    for (let i = 0; i < tiles.length; i++) if (ids[i] === epidemic.district) healthMap[i] = epidemic.severity / 100;
+  }
+  let eduSum = 0;
+  const specJobs: [number, number, number, number] = [0, 0, 0, 0];
+  let tramRiders = 0;
+  let trainRiders = 0;
+  let parkingShortage = 0;
+  let parkingNeeded = false;
 
   let population = 0;
   let jobsC = 0;
@@ -655,9 +798,17 @@ export function analyzeCity(tiles: Tile[], size: number, policy: Policy = DEFAUL
     if (t.type === 'R') {
       const residents = RESIDENTS[t.density];
       population += residents;
-      const m = cov.METRO[i] > 0 ? transit[i] * (0.35 * cov.METRO[i]) / Math.max(0.001, 0.35 * cov.METRO[i] + 0.22 * cov.BUSSTOP[i]) : 0;
-      metroRiders += Math.round(residents * WORKFORCE_RATIO * m);
-      busRiders += Math.round(residents * WORKFORCE_RATIO * (transit[i] - m));
+      // Usagers répartis entre les modes selon leur poids dans la part modale de la tuile.
+      const rail = 0.3 * cov.STATION[i];
+      const tramS = 0.28 * cov.TRAM[i];
+      const tot = 0.35 * cov.METRO[i] + 0.22 * cov.BUSSTOP[i] + tramS + rail;
+      if (tot > 0) {
+        const riders = residents * WORKFORCE_RATIO * transit[i];
+        metroRiders += Math.round((riders * 0.35 * cov.METRO[i]) / tot);
+        busRiders += Math.round((riders * 0.22 * cov.BUSSTOP[i]) / tot);
+        tramRiders += Math.round((riders * tramS) / tot);
+        trainRiders += Math.round((riders * rail) / tot);
+      }
       pollutionR += pollution[i];
       rTiles++;
       if (traffic.commute[i] >= 0) {
@@ -665,8 +816,14 @@ export function analyzeCity(tiles: Tile[], size: number, policy: Policy = DEFAUL
         commuteN++;
       }
       joblessWorkers += residents * WORKFORCE_RATIO * traffic.jobless[i];
-    } else if (t.type === 'C') jobsC += JOBS_C[t.density];
-    else jobsI += JOBS_I[t.density];
+      eduSum += educationAt(cov, i) * residents;
+    } else if (t.type === 'C') {
+      jobsC += JOBS_C[t.density];
+      if (t.density >= 2 && cov.PARKING[i] === 0) parkingNeeded = true;
+    } else {
+      jobsI += JOBS_I[t.density];
+      specJobs[t.spec] += JOBS_I[t.density];
+    }
 
     covSum.police += cov.POLICE[i] > 0 ? 1 : 0;
     covSum.fire += cov.FIRE[i] > 0 ? 1 : 0;
@@ -721,7 +878,35 @@ export function analyzeCity(tiles: Tile[], size: number, policy: Policy = DEFAUL
   }
   const eventTourism = cityEvents.reduce((s, e) => s + e.tourism, 0);
   const eventBonus = Math.min(10, cityEvents.reduce((s, e) => s + e.bonus, 0));
-  const tourism = Math.round((monuments.reduce((s, m) => s + MONUMENT_TOURISM[m], 0) + venueTourism + eventTourism) * (population > 0 ? 1 : 0));
+  // Tourisme : plages aménagées et attractions attirent des visiteurs ; sans
+  // chambre d'hôtel, ce ne sont que des touristes d'un jour qui dépensent moitié moins.
+  let resorts = 0;
+  let hotels = 0;
+  for (const t of tiles) {
+    if (t.type === 'RESORT' && t.flood === 0) resorts += Math.max(0.3, 1 - waterMap[t.y * size + t.x]);
+    else if (t.type === 'HOTEL' && t.powered && t.flood === 0) hotels++;
+  }
+  const attractions = monuments.reduce((s, m) => s + MONUMENT_TOURISM[m], 0) + venueTourism + eventTourism + resorts * RESORT_VISITORS * SPEND_PER_VISITOR;
+  const tourists = population > 0 ? Math.round(attractions / SPEND_PER_VISITOR) : 0;
+  const hotelGuests = Math.min(tourists, hotels * HOTEL_ROOMS);
+  const tourism = Math.round((hotelGuests + (tourists - hotelGuests) * 0.5) * SPEND_PER_VISITOR);
+  // Parkings : au-delà d'une certaine taille, les commerces denses en ont besoin.
+  if (population >= PARKING_NEEDED_AT && parkingNeeded) {
+    for (let i = 0; i < tiles.length; i++) {
+      const t = tiles[i];
+      if (t.type === 'C' && t.density >= 2 && cov.PARKING[i] === 0) parkingShortage++;
+    }
+  }
+  let lakeSum = 0;
+  let lakeN = 0;
+  for (let i = 0; i < tiles.length; i++) {
+    if (tiles[i].type === 'LAKE') {
+      lakeSum += waterMap[i];
+      lakeN++;
+    }
+  }
+  const waterPollution = lakeN ? Math.round((lakeSum / lakeN) * 100) : 0;
+  const severity = epidemic?.severity ?? 0;
   const landfills = tiles.filter((t) => t.type === 'LANDFILL');
   const landfill = landfills.length ? Math.round((landfills.reduce((s, t) => s + t.garbage, 0) / (landfills.length * 9)) * 100) : 0;
   const strikes = (Object.keys(funding) as FundingKey[]).filter((k) => funding[k] < STRIKE_BELOW);
@@ -754,6 +939,8 @@ export function analyzeCity(tiles: Tile[], size: number, policy: Policy = DEFAUL
               Math.min(6, stadiums * 4) +
               (monuments.includes('LANDMARK') ? 3 : 0) +
               eventBonus -
+              severity * 0.12 -
+              waterPollution * 0.05 -
               (grid.demand > grid.served + 1 && population > 0 ? Math.min(8, ((grid.demand - grid.served) / grid.demand) * 20) : 0),
             0,
             100,
@@ -790,8 +977,18 @@ export function analyzeCity(tiles: Tile[], size: number, policy: Policy = DEFAUL
       power: { supply: grid.supply, demand: grid.demand, served: grid.served, outOfRange: grid.outOfRange },
       exports: { jobs: exp.jobs, capacity: exp.capacity, connected: exp.connected },
       eventBonus,
+      educationLevel: population > 0 ? Math.round((eduSum / population) * 100) : 0,
+      specJobs,
+      waterPollution,
+      tourists,
+      hotelGuests,
+      tramRiders,
+      trainRiders,
+      parkingShortage,
+      epidemic: Math.round(severity),
+      linkedStations: connectedStations(tiles, size).size,
     },
-    maps: { traffic: traffic.congestion, pollution, crime: crimeMap },
+    maps: { traffic: traffic.congestion, pollution, crime: crimeMap, water: waterMap, health: healthMap },
     cov,
     traffic,
     transit,
@@ -877,7 +1074,11 @@ function landValue(tiles: Tile[], size: number, t: Tile, idx: number, hasRoad: b
     cov.POLICE[idx] * 5 +
     cov.METRO[idx] * 12 +
     cov.BUSSTOP[idx] * 5 +
-    (ordinances.trees ? 4 : 0) -
+    (ordinances.trees ? 4 : 0) +
+    // Les hauteurs offrent une belle vue ; une eau polluée fait fuir.
+    t.elev * 3 -
+    a.maps.water[idx] * 15 -
+    a.maps.health[idx] * 10 -
     Math.max(0, jam - 1) * 8 -
     t.garbage * 3 -
     (a.maps.crime[idx] * 100) * 0.15;
@@ -889,18 +1090,23 @@ function landValue(tiles: Tile[], size: number, t: Tile, idx: number, hasRoad: b
   return Math.round(clamp(v, 0, 100));
 }
 
-function maxDensity(t: Tile, value: number, population: number, exportOk = true): number {
+function maxDensity(t: Tile, value: number, population: number, exportOk = true, edu = 1, parkingOk = true): number {
   if (t.rad > 0) return 0;
   // Sans eau courante, impossible de dépasser le niveau 1.
   if (!t.water) return 1;
   switch (t.type) {
     case 'R':
       return value >= 62 ? 3 : 2;
-    case 'C':
-      return value >= 55 && population > 800 ? 3 : population > 150 ? 2 : 1;
+    case 'C': {
+      // Les tours de bureaux ont besoin d'employés diplômés et, en grande ville, d'un parking.
+      const tower = value >= 55 && population > 800 && (population < PARKING_NEEDED_AT || parkingOk) && (population < 1500 || edu >= 0.3);
+      return tower ? 3 : population > 150 ? 2 : 1;
+    }
     case 'I':
+      // La haute technologie exporte par la route ou par internet ; l'agriculture reste basse.
+      if (t.spec === 1) return Math.min(2, population > 250 ? 2 : 1);
       // Une usine qui ne peut pas exporter reste un petit atelier.
-      if (!exportOk && population >= EXPORT_NEEDED_AT) return 1;
+      if (!exportOk && t.spec !== 3 && population >= EXPORT_NEEDED_AT) return 1;
       return population > 1200 ? 3 : population > 250 ? 2 : 1;
     default:
       return 0;
@@ -966,7 +1172,8 @@ function flood(out: Tile[], size: number, random: () => number): DisasterEvent |
   let damage = 0;
   for (let i = 0; i < out.length; i++) {
     const t = out[i];
-    if (t.type === 'LAKE' || t.lake || Math.hypot(t.x - c.x, t.y - c.y) > 7) continue;
+    // Les hauteurs restent au sec.
+    if (t.type === 'LAKE' || t.lake || t.elev >= 1 || Math.hypot(t.x - c.x, t.y - c.y) > 7) continue;
     // Seules les tuiles proches de l'eau sont inondées.
     let wet = false;
     for (let dy = -2; dy <= 2 && !wet; dy++) {
@@ -1009,7 +1216,88 @@ function blackout(out: Tile[], random: () => number): DisasterEvent | null {
   return { kind: 'blackout', x: t.x, y: t.y, damage: 1 };
 }
 
+/** Feu de forêt : démarre dans un massif et se propage aux arbres voisins. */
+function wildfire(out: Tile[], random: () => number): DisasterEvent | null {
+  const forests = out.filter((t) => t.type === 'FOREST' && t.fire === 0);
+  if (!forests.length) return null;
+  const c = forests[Math.floor(random() * forests.length)];
+  let damage = 0;
+  for (let i = 0; i < out.length; i++) {
+    const t = out[i];
+    if (t.type === 'FOREST' && Math.hypot(t.x - c.x, t.y - c.y) <= 2.2) {
+      out[i] = { ...t, fire: 1 };
+      damage++;
+    }
+  }
+  return { kind: 'wildfire', x: c.x, y: c.y, damage };
+}
+
+/** Météorite : un cratère au point d'impact, des incendies tout autour. */
+function meteor(out: Tile[], size: number, random: () => number): DisasterEvent {
+  const x = 3 + Math.floor(random() * Math.max(1, size - 6));
+  const y = 3 + Math.floor(random() * Math.max(1, size - 6));
+  let damage = 0;
+  for (let i = 0; i < out.length; i++) {
+    const t = out[i];
+    const d = Math.hypot(t.x - x, t.y - y);
+    if (d > 4.5 || t.type === 'LAKE') continue;
+    if (d <= 1.6) {
+      // Le cratère : un trou de terre brûlée, sans bâtiment ni route.
+      out[i] = { ...t, type: t.lake ? 'LAKE' : 'DIRT', density: 0, fire: 0, garbage: 0, flood: 0, line: 0, spec: 0, elev: 0, value: isZone(t.type) ? -1 : 0 };
+      damage++;
+    } else if (d <= 2.8 && destructible(t)) {
+      out[i] = destroyTile(t);
+      damage++;
+    } else if ((isZone(t.type) && t.density > 0) || t.type === 'FOREST') {
+      if (random() < 0.5) {
+        out[i] = { ...t, fire: 1 };
+        damage++;
+      }
+    }
+  }
+  return { kind: 'meteor', x, y, damage };
+}
+
+/** Monstre géant : il traverse la ville en ligne presque droite et piétine tout. */
+function monster(out: Tile[], size: number, random: () => number): DisasterEvent {
+  // Il sort d'un lac s'il y en a un, sinon d'un bord de la carte.
+  const lakes = out.filter((t) => t.type === 'LAKE');
+  const from = lakes.length ? lakes[Math.floor(random() * lakes.length)] : { x: 0, y: Math.floor(random() * size) };
+  let x = from.x;
+  let y = from.y;
+  let dir = Math.atan2(size / 2 - y, size / 2 - x) + (random() - 0.5) * 0.6;
+  const path: [number, number][] = [];
+  let damage = 0;
+  for (let s = 0; s < 34; s++) {
+    path.push([x, y]);
+    for (const [dx, dy] of [
+      [0, 0],
+      [1, 0],
+      [0, 1],
+    ]) {
+      const nx = x + dx;
+      const ny = y + dy;
+      if (nx < 0 || ny < 0 || nx >= size || ny >= size) continue;
+      const i = ny * size + nx;
+      const t = out[i];
+      if (destructible(t) && random() < 0.75) {
+        out[i] = random() < 0.25 && isZone(t.type) && t.density > 0 ? { ...t, fire: 1 } : destroyTile(t);
+        damage++;
+      }
+    }
+    dir += (random() - 0.5) * 0.35;
+    x = Math.round(x + Math.cos(dir) * 1.3);
+    y = Math.round(y + Math.sin(dir) * 1.3);
+    if (x < -2 || y < -2 || x > size + 1 || y > size + 1) break;
+  }
+  return { kind: 'monster', x: path[0][0], y: path[0][1], path, damage };
+}
+
 export const DISASTER_LABELS: Record<DisasterKind, { icon: string; label: string }> = {
+  wildfire: { icon: '🌲', label: 'Feu de forêt' },
+  meteor: { icon: '☄️', label: 'Météorite' },
+  monster: { icon: '🦖', label: 'Monstre géant' },
+  epidemic: { icon: '🦠', label: 'Épidémie' },
   earthquake: { icon: '🌍', label: 'Séisme' },
   flood: { icon: '🌊', label: 'Inondation' },
   tornado: { icon: '🌪️', label: 'Tornade' },
@@ -1037,7 +1325,11 @@ export function simulateMonth(input: SimInput): SimOutput {
 
   // 1. Réseaux (au cas où la carte aurait changé depuis le dernier tick).
   let tiles = applyPower(input.tiles, size, month);
-  const before = analyzeCity(tiles, size, policy, month);
+  const before = analyzeCity(tiles, size, policy, month, [], input.epidemic ?? null);
+  const dIds = districtMap(size).ids;
+  const epi = input.epidemic && input.epidemic.severity > 0 ? input.epidemic : null;
+  let forestBurnt = 0;
+  let forestFires = 0;
   const cityEvents = planEvents(tiles, month, weather, random, input.forcedEvents);
   const monumentsBefore = MONUMENT_TYPES.filter((m) => tiles.some((t) => t.type === m && t.powered));
 
@@ -1092,6 +1384,34 @@ export function simulateMonth(input: SimInput): SimOutput {
       out[idx] = t;
       continue;
     }
+    // Forêts : la canicule et la foudre allument des feux qui se propagent d'arbre en arbre.
+    if (t.type === 'FOREST') {
+      if (t.fire > 0) {
+        const cov = fireF(idx);
+        if (cov > 0 && random() < 0.3 + cov * 0.45) out[idx] = { ...t, fire: 0 };
+        else if (weather === 'rain' && random() < 0.5) out[idx] = { ...t, fire: 0 };
+        else if (t.fire + 1 >= 3) {
+          out[idx] = { ...t, type: 'DIRT', fire: 0 };
+          forestBurnt++;
+        } else {
+          out[idx] = { ...t, fire: t.fire + 1 };
+          const spread = weather === 'heat' ? 0.5 : weather === 'rain' || weather === 'snow' ? 0.08 : 0.3;
+          for (const nb of neighbours4(idx, size, n)) {
+            const o = nb >= 0 ? out[nb] : null;
+            if (!o || o.fire > 0) continue;
+            if (o.type === 'FOREST' && random() < spread) out[nb] = { ...o, fire: 1 };
+            else if (isZone(o.type) && o.density > 0 && random() < 0.08) {
+              out[nb] = { ...o, fire: 1 };
+              events.newFires++;
+            }
+          }
+        }
+      } else if (input.disasters && (weather === 'heat' || weather === 'storm') && random() < (weather === 'heat' ? 0.00035 : 0.00015)) {
+        out[idx] = { ...t, fire: 1 };
+        forestFires++;
+      }
+      continue;
+    }
     if (!isZone(t.type)) continue;
 
     // Incendies : la caserne éteint le feu, sinon il s'étend puis détruit le bâtiment.
@@ -1144,7 +1464,8 @@ export function simulateMonth(input: SimInput): SimOutput {
     if (!fire && changes < MAX_CHANGES_PER_TICK) {
       const d = t.type === 'R' ? demand.r : t.type === 'C' ? demand.c : demand.i;
       const canGrow = hasRoad && t.powered && garbage < 7;
-      const cap = maxDensity(t, value, before.stats.population, before.exportOk[idx] === 1);
+      const edu = educationAt(before.cov, idx);
+      const cap = maxDensity(t, value, before.stats.population, before.exportOk[idx] === 1, edu, before.cov.PARKING[idx] > 0);
       // Une parcelle sinistrée (déjà bâtie avant) se reconstruit en priorité.
       const ruined = density === 0 && t.value < 0 && d > -0.3;
       if (canGrow && (d > 0 || ruined) && density < cap) {
@@ -1159,13 +1480,21 @@ export function simulateMonth(input: SimInput): SimOutput {
       } else if (density > 0 && d < -0.25) {
         if (random() < -d * 0.04) density--; // déclin si la demande s'effondre
       }
+      // Épidémie : des habitants quittent le quartier touché.
+      if (epi && density > 0 && t.type === 'R' && dIds[idx] === epi.district && random() < epi.severity / 900) density--;
+    }
+    // Spécialité industrielle : choisie à la construction de l'usine, oubliée quand elle disparaît.
+    let spec = t.spec;
+    if (t.type === 'I') {
+      if (density === 0) spec = 0;
+      else if (t.density === 0) spec = chooseSpec(out, size, t, educationAt(before.cov, idx), before.stats.population);
     }
 
     // La parcelle reste marquée « sinistrée » tant qu'elle n'est pas reconstruite.
     const nextValue = t.value < 0 && density === 0 ? -1 : value;
-    if (density !== t.density || nextValue !== t.value || fire !== t.fire || garbage !== t.garbage) {
+    if (density !== t.density || nextValue !== t.value || fire !== t.fire || garbage !== t.garbage || spec !== t.spec) {
       if (density !== t.density) changes++;
-      out[idx] = { ...t, density, value: nextValue, fire, garbage };
+      out[idx] = { ...t, density, value: nextValue, fire, garbage, spec };
     }
   }
 
@@ -1196,20 +1525,71 @@ export function simulateMonth(input: SimInput): SimOutput {
     if (roll(0.0015)) kinds.push('meltdown');
     // Les orages favorisent les inondations.
     if (weather === 'storm' && roll(0.03)) kinds.push('flood');
+    if (weather === 'heat' && roll(0.02)) kinds.push('wildfire');
+    if (input.funDisasters && roll(0.002)) kinds.push('meteor');
+    if (input.funDisasters && roll(0.0015)) kinds.push('monster');
   }
+  let epidemic: Epidemic | null = epi ? { ...epi } : null;
   for (const kind of kinds) {
+    if (kind === 'epidemic') {
+      epidemic = startEpidemic(before, size, random) ?? epidemic;
+      if (epidemic && !epi) {
+        const d = districtMap(size).list[epidemic.district];
+        events.disasters.push({ kind, x: d.cx, y: d.cy, damage: 0 });
+        events.news.push({ icon: '🦠', text: `Épidémie ${aLieu(d.name)} ! Couvrez le quartier avec des hôpitaux.` });
+      }
+      continue;
+    }
     const ev =
-      kind === 'earthquake' ? earthquake(out, size, random) : kind === 'tornado' ? tornado(out, size, random) : kind === 'flood' ? flood(out, size, random) : kind === 'meltdown' ? meltdown(out, size, random) : blackout(out, random);
+      kind === 'earthquake'
+        ? earthquake(out, size, random)
+        : kind === 'tornado'
+          ? tornado(out, size, random)
+          : kind === 'flood'
+            ? flood(out, size, random)
+            : kind === 'meltdown'
+              ? meltdown(out, size, random)
+              : kind === 'wildfire'
+                ? wildfire(out, random)
+                : kind === 'meteor'
+                  ? meteor(out, size, random)
+                  : kind === 'monster'
+                    ? monster(out, size, random)
+                    : blackout(out, random);
     if (!ev) continue;
     events.disasters.push(ev);
     const L = DISASTER_LABELS[kind];
     events.news.push({ icon: L.icon, text: `${L.label} ! ${ev.damage} tuile(s) touchée(s) près de (${ev.x}, ${ev.y}).` });
   }
 
+  // Épidémies : naissent dans les quartiers mal soignés ou près d'une eau polluée,
+  // reculent quand les hôpitaux couvrent le quartier.
+  if (!epidemic && !input.trigger && input.disasters && before.stats.population >= 300) {
+    const p = 0.002 + (before.stats.waterPollution / 100) * 0.01 + (1 - before.stats.coverage.health / 100) * 0.004;
+    if (random() < p) {
+      epidemic = startEpidemic(before, size, random);
+      if (epidemic) {
+        const d = districtMap(size).list[epidemic.district];
+        events.disasters.push({ kind: 'epidemic', x: d.cx, y: d.cy, damage: 0 });
+        events.news.push({ icon: '🦠', text: `Épidémie ${aLieu(d.name)} ! Couvrez le quartier avec des hôpitaux.` });
+      }
+    }
+  } else if (epidemic && epi) {
+    const care = districtHealth(before, size, epidemic.district);
+    const sev = epidemic.severity + (care >= 0.5 ? -30 * care : 12 - care * 10) + (before.stats.waterPollution > 30 ? 4 : 0);
+    epidemic = { ...epidemic, severity: Math.min(100, Math.round(sev)), months: epidemic.months + 1 };
+    if (epidemic.severity <= 0 || epidemic.months >= 10) {
+      events.news.push({ icon: '💉', text: 'L’épidémie est terminée. Les habitants respirent.' });
+      epidemic = null;
+    }
+  }
+  if (forestFires > 0) events.news.push({ icon: '🌲', text: `Feu de forêt ! ${forestFires} foyer(s) dans les bois.` });
+  if (forestBurnt > 0) events.news.push({ icon: '🔥', text: `${forestBurnt} parcelle(s) de forêt partie(s) en fumée.` });
+
   tiles = applyPower(out, size, month);
 
   // 6. Budget : impôts R/C/I + tourisme − entretien (au prorata du budget) − ordonnances.
-  const after = analyzeCity(tiles, size, policy, month, cityEvents);
+  const after = analyzeCity(tiles, size, policy, month, cityEvents, epidemic);
   const stats = after.stats;
   if (snowJam && stats.population > 0) {
     stats.happiness = Math.max(0, stats.happiness - 5);
@@ -1262,7 +1642,53 @@ export function simulateMonth(input: SimInput): SimOutput {
     weather,
     cityEvents,
     analysis: after,
+    epidemic,
   };
+}
+
+/** Choisit la spécialité d'une nouvelle usine selon son environnement. */
+function chooseSpec(tiles: Tile[], size: number, t: Tile, edu: number, population: number): number {
+  if (edu >= 0.55 && population >= 1000) return 3;
+  let forest = 0;
+  let urban = 0;
+  for (let dy = -3; dy <= 3; dy++) {
+    for (let dx = -3; dx <= 3; dx++) {
+      const x = t.x + dx;
+      const y = t.y + dy;
+      if (x < 0 || y < 0 || x >= size || y >= size) continue;
+      const o = tiles[y * size + x];
+      if (o.type === 'FOREST') forest++;
+      else if ((o.type === 'R' || o.type === 'C') && o.density > 0) urban++;
+    }
+  }
+  if (forest >= 4) return 2;
+  if (urban === 0) return 1;
+  return 0;
+}
+
+/** Couverture santé moyenne des habitations d'un quartier (0-1). */
+function districtHealth(a: Analysis, size: number, district: number): number {
+  const ids = districtMap(size).ids;
+  let sum = 0;
+  let count = 0;
+  for (const h of a.traffic.homes) {
+    if (ids[h.idx] !== district) continue;
+    sum += a.cov.HOSPITAL[h.idx] > 0 ? 1 : 0;
+    count++;
+  }
+  return count ? sum / count : 0;
+}
+
+/** Démarre une épidémie dans le quartier le plus peuplé parmi les moins bien soignés. */
+function startEpidemic(a: Analysis, size: number, random: () => number): Epidemic | null {
+  const dm = districtMap(size);
+  const pop = new Float32Array(dm.list.length);
+  for (const h of a.traffic.homes) pop[dm.ids[h.idx]] += h.workers + 1;
+  const score = dm.list.map((d) => pop[d.id] * (1.2 - districtHealth(a, size, d.id)));
+  const candidates = dm.list.filter((d) => pop[d.id] > 0).sort((p, q) => score[q.id] - score[p.id]);
+  if (!candidates.length) return null;
+  const pick = candidates[Math.min(candidates.length - 1, Math.floor(random() * Math.min(2, candidates.length)))];
+  return { district: pick.id, severity: 25, months: 0 };
 }
 
 export const MONUMENT_NAMES: Record<MonumentType, string> = {

@@ -75,7 +75,7 @@ export class RotatedTiles {
       let v = cache.get(t);
       if (!v) {
         const [x, y] = toView(t.x, t.y, size, rot);
-        v = { ...t, x, y };
+        v = { ...t, x, y, ox: t.x, oy: t.y };
         cache.set(t, v);
       }
       out[v.y * size + v.x] = v;

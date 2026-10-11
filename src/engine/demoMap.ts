@@ -1,4 +1,4 @@
-import { createEmptyMap, tileIndex, type Tile, type TileType } from './map';
+import { createEmptyMap, LINE_TRAM, tileIndex, type Tile, type TileType } from './map';
 
 /**
  * Petite ville de démonstration générée de façon déterministe, pour juger le
@@ -77,6 +77,9 @@ export function createDemoMap(size: number): Tile[] {
     [39, 23],
     [39, 33],
     [25, 24],
+    [20, 14],
+    [12, 24],
+    [33, 16],
   ]) {
     set(x, y, 'WATER');
   }
@@ -194,6 +197,67 @@ export function createDemoMap(size: number): Tile[] {
   set(24, 17, 'LANDMARK');
   set(10, 39, 'UNIVERSITY');
   for (let x = 8; x <= 11; x++) set(x, 38, 'ROAD');
+
+  // Relief : collines boisées à l'ouest, montagne au nord percée d'un tunnel.
+  for (let y = 10; y < 40; y++) {
+    for (let x = 0; x < 6; x++) {
+      const t = get(x, y);
+      if (t.type === 'LAKE') continue;
+      t.elev = Math.max(0, Math.min(3, Math.round(3 - x * 0.6 + Math.sin(y / 3) * 0.6)));
+    }
+  }
+  for (let y = 0; y < 6; y++) {
+    for (let x = 30; x < 46; x++) {
+      const t = get(x, y);
+      t.elev = Math.max(0, Math.min(3, 3 - Math.floor(y / 2) - (x < 32 || x > 43 ? 1 : 0)));
+    }
+  }
+  for (let y = 0; y <= 7; y++) {
+    set(38, y, 'ROAD');
+    get(38, y).elev = y <= 1 ? 2 : y <= 3 ? 1 : 0;
+  }
+  for (let y = 0; y <= 7; y++) for (const x of [37, 39]) if (get(x, y).type === 'GRASS') get(x, y).elev = get(38, y).elev + (y <= 3 ? 1 : 0);
+
+  // Tramway sur l'avenue centrale.
+  for (let x = 8; x <= 42; x++) get(x, 20).line |= LINE_TRAM;
+
+  // Voie ferrée à l'est (le long de l'autoroute) avec deux gares.
+  for (let y = 4; y <= 40; y++) set(48, y, 'RAIL');
+  set(48, 12, 'STATION');
+  set(48, 30, 'STATION');
+  set(47, 12, 'RAIL');
+  set(47, 30, 'RAIL');
+
+  // Tourisme : hôtel près de la tour, plages aménagées sur la rivière.
+  set(26, 18, 'HOTEL');
+  set(31, 22, 'HOTEL');
+  let resorts = 0;
+  for (let x = 22; x < size && resorts < 4; x += 3) {
+    for (let y = 38; y < size; y++) {
+      if (get(x, y).type === 'SAND' && (get(x, y + 1)?.type === 'LAKE' || get(x, y - 1)?.type === 'LAKE')) {
+        set(x, y, 'RESORT');
+        resorts++;
+        break;
+      }
+    }
+  }
+
+  // Lycée, parkings du centre-ville, station d'épuration au bord de la rivière.
+  set(31, 16, 'HIGHSCHOOL');
+  set(22, 25, 'PARKING');
+  set(26, 22, 'PARKING');
+  set(14, 40, 'TREATMENT');
+  set(15, 40, 'ROAD');
+  for (let y = 37; y <= 40; y++) set(16, y, 'ROAD');
+
+  // Industries spécialisées : fermes et scierie près des bois, haute technologie à l'est.
+  for (let y = 29; y <= 35; y++) {
+    for (let x = 9; x <= 27; x++) {
+      const t = get(x, y);
+      if (t.type !== 'I' || t.density === 0) continue;
+      t.spec = x <= 10 ? 2 : x <= 13 ? 1 : x >= 24 ? 3 : 0;
+    }
+  }
 
   return tiles;
 }

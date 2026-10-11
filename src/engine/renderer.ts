@@ -10,7 +10,9 @@ import {
   type SkPathBuilder,
 } from '@shopify/react-native-skia';
 
-import { isFacility, isPlant, isRoadType, tileIndex, type RoadType, type ServiceType, type Tile } from './map';
+import { LEVEL_H } from '../sim/constants';
+import { districtMap } from '../sim/districts';
+import { isFacility, isPlant, isRail, isRoadType, isTunnel, LINE_RAIL, LINE_TRAM, tileIndex, type RoadType, type ServiceType, type Tile } from './map';
 import { getOrigin, getWorldSize, gridToWorld, HALF_H, HALF_W, tileDiamond, type IsoOrigin, type Point } from './iso';
 import { PALETTE, shade } from './palette';
 
@@ -25,6 +27,55 @@ export const SUN = { x: 0.6, y: 0.3 };
 
 /** Profondeur des falaises de terre sur les bords sud de la carte. */
 const CLIFF_DEPTH = 14;
+
+// ---------------------------------------------------------------------------
+// Contexte de rendu : saison (arbres, fleurs, Noël) et taille de la carte (styles de quartier)
+// ---------------------------------------------------------------------------
+
+type Look = 'spring' | 'summer' | 'autumn' | 'winter' | 'christmas';
+let look: Look = 'spring';
+let lookSize = 0;
+
+/** Saison affichée par les arbres et le sol. Renvoie vrai si elle a changé. */
+export function setRenderSeason(month: number): boolean {
+  const m = ((month % 12) + 12) % 12;
+  const next: Look = m === 11 ? 'christmas' : m <= 1 ? 'winter' : m <= 4 ? 'spring' : m <= 7 ? 'summer' : m <= 10 ? 'autumn' : 'winter';
+  if (next === look) return false;
+  look = next;
+  return true;
+}
+export const renderSeason = () => look;
+
+/** Couleurs du feuillage selon la saison (deux teintes alternées). */
+function foliage(k: number, x: number, y: number): string {
+  const h = hash01(x, y, 90 + k);
+  switch (look) {
+    case 'autumn':
+      return h < 0.35 ? '#d35400' : h < 0.65 ? '#e67e22' : h < 0.85 ? '#c0392b' : '#b7950b';
+    case 'winter':
+    case 'christmas':
+      return h < 0.6 ? '#4d6b57' : '#5b7a66';
+    case 'spring':
+      return h < 0.15 ? '#f5b7b1' : k % 2 ? '#2ecc71' : '#28b463';
+    default:
+      return k % 2 ? '#1e8449' : '#196f3d';
+  }
+}
+
+/** Style architectural du quartier d'une tuile (0 moderne, 1 classique, 2 brique, 3 coloré). */
+function styleOf(tile: Tile): number {
+  if (lookSize <= 0) return 0;
+  const x = tile.ox ?? tile.x;
+  const y = tile.oy ?? tile.y;
+  if (x < 0 || y < 0 || x >= lookSize || y >= lookSize) return 0;
+  return districtMap(lookSize).ids[y * lookSize + x] % 4;
+}
+
+/** Coordonnées d'origine (stables quand on tourne la vue) pour les variations visuelles. */
+const ogx = (t: Tile) => t.ox ?? t.x;
+const ogy = (t: Tile) => t.oy ?? t.y;
+/** Hauteur écran du sol d'une tuile. */
+const zOf = (t: Tile) => (t.type === 'LAKE' ? 0 : (t.elev ?? 0) * LEVEL_H);
 
 // ---------------------------------------------------------------------------
 // Peintures (mises en cache par couleur / style)
@@ -313,6 +364,11 @@ function tree(ox: number, oy: number, scale = 1, color = '#1e8449'): Prism {
   return { ox, oy, size: 0.06, h: 5 * scale, color: '#6e4b2a', roof: 'flat', blob: { r: 6.5 * scale, color } };
 }
 
+/** Un sapin : tronc + cône vert sombre (persistant). */
+function fir(ox: number, oy: number, scale = 1): Prism {
+  return { ox, oy, size: 0.2 * scale, h: 3 * scale, color: '#6e4b2a', roof: 'hip', roofColor: '#145a32', roofHeight: 16 * scale };
+}
+
 /** Trier les sous-objets d'une tuile de l'arrière vers l'avant (ordre peintre). */
 const byDepth = (a: Prism, b: Prism) => (a.ox ?? 0) + (a.oy ?? 0) - ((b.ox ?? 0) + (b.oy ?? 0));
 
@@ -320,52 +376,88 @@ const byDepth = (a: Prism, b: Prism) => (a.ox ?? 0) + (a.oy ?? 0) - ((b.ox ?? 0)
 // Catalogue des bâtiments (par type + densité)
 // ---------------------------------------------------------------------------
 
+/** Teintes des façades selon le style du quartier (même famille de couleur que la zone). */
+const R_STYLE = [
+  { wall: PALETTE.residential, roof: PALETTE.residentialRoof, alt: '#c0392b' },
+  { wall: '#58d68d', roof: '#7b241c', alt: '#6e2c00' },
+  { wall: '#1d8348', roof: '#5d6d7e', alt: '#a04000' },
+  { wall: '#7dcea0', roof: '#2471a3', alt: '#d4ac0d' },
+];
+const C_STYLE = [
+  { wall: PALETTE.commercial, glass: PALETTE.windowC },
+  { wall: '#5d8aa8', glass: '#fdebd0' },
+  { wall: '#21618c', glass: '#aed6f1' },
+  { wall: '#48c9b0', glass: '#e8f8f5' },
+];
+
 function baseBuildingFor(tile: Tile): Prism[] {
   // Parcelle zonée mais pas encore construite : seul le sol (lot teinté) est dessiné.
   if (tile.density === 0 && (tile.type === 'R' || tile.type === 'C' || tile.type === 'I')) return [];
-  const v = hash01(tile.x, tile.y);
-  const v2 = hash01(tile.x, tile.y, 7);
+  const gx = ogx(tile);
+  const gy = ogy(tile);
+  const v = hash01(gx, gy);
+  const v2 = hash01(gx, gy, 7);
   switch (tile.type) {
-    case 'R':
+    case 'R': {
+      const st = styleOf(tile);
+      const S = R_STYLE[st];
       if (tile.density === 1)
         return [
           {
             size: 0.55,
             h: 9 + v * 3,
-            color: shade(PALETTE.residential, 0.35),
+            color: shade(S.wall, 0.35),
             roof: 'hip',
-            roofColor: v2 > 0.5 ? PALETTE.residentialRoof : PALETTE.residential,
-            roofHeight: 9,
+            roofColor: v2 > 0.5 ? S.roof : S.alt,
+            roofHeight: st === 1 ? 12 : 9,
             windows: { floors: 1, cols: 2, color: PALETTE.windowR },
           },
+          ...(st === 3 ? [tree(0.32, 0.3, 0.6, foliage(1, gx, gy))] : []),
         ];
-      if (tile.density === 2)
+      if (tile.density === 2) {
+        const h = 24 + v * 8;
+        if (st === 1)
+          // Immeuble classique : toit à pans et lucarnes.
+          return [{ size: 0.72, h, color: S.wall, roof: 'hip', roofColor: S.roof, roofHeight: 10, windows: { floors: 3, cols: 3, color: PALETTE.windowR } }];
         return [
-          {
-            size: 0.72,
-            h: 24 + v * 8,
-            color: PALETTE.residential,
-            windows: { floors: 3, cols: 3, color: PALETTE.windowR },
-          },
-          { ox: -0.12, oy: -0.12, size: 0.16, z: 24 + v * 8, h: 4, color: '#95a5a6' },
+          { size: 0.72, h, color: S.wall, windows: { floors: 3, cols: 3, color: PALETTE.windowR } },
+          { ox: -0.12, oy: -0.12, size: 0.16, z: h, h: 4, color: st === 2 ? '#a04000' : '#95a5a6' },
+        ];
+      }
+      if (st === 0)
+        // Tour moderne en gradins.
+        return [
+          { size: 0.64, h: 40 + v * 12, color: S.wall, windows: { floors: 6, cols: 3, color: PALETTE.windowR } },
+          { size: 0.46, z: 40 + v * 12, h: 22 + v2 * 10, color: shade(S.wall, 0.1), windows: { floors: 3, cols: 2, color: PALETTE.windowR }, antenna: v2 > 0.5 ? 10 : 0 },
+        ];
+      if (st === 3)
+        // Deux tours colorées.
+        return [
+          { ox: -0.16, oy: -0.16, size: 0.36, h: 60 + v * 16, color: S.wall, windows: { floors: 9, cols: 2, color: PALETTE.windowR } },
+          { ox: 0.18, oy: 0.18, size: 0.36, h: 44 + v2 * 12, color: shade(S.wall, -0.15), windows: { floors: 7, cols: 2, color: PALETTE.windowR } },
         ];
       return [
         {
           size: 0.62,
           h: 56 + v * 22,
-          color: shade(PALETTE.residential, -0.05),
+          color: shade(S.wall, -0.05),
           windows: { floors: 8, cols: 3, color: PALETTE.windowR },
           antenna: v2 > 0.5 ? 10 : 0,
+          ...(st === 1 ? { roof: 'hip' as const, roofColor: S.roof, roofHeight: 12 } : {}),
         },
       ];
-    case 'C':
+    }
+    case 'C': {
+      const st = styleOf(tile);
+      const S = C_STYLE[st];
       if (tile.density === 1)
         return [
           {
             size: 0.8,
             h: 12 + v * 3,
-            color: PALETTE.commercial,
-            windows: { floors: 1, cols: 3, color: PALETTE.windowC },
+            color: S.wall,
+            windows: { floors: 1, cols: 3, color: S.glass },
+            ...(st === 1 ? { roof: 'hip' as const, roofColor: '#922b21', roofHeight: 7 } : {}),
           },
         ];
       if (tile.density === 2)
@@ -373,27 +465,63 @@ function baseBuildingFor(tile: Tile): Prism[] {
           {
             size: 0.7,
             h: 34 + v * 10,
-            color: PALETTE.commercial,
-            windows: { floors: 5, cols: 4, color: PALETTE.windowC },
+            color: S.wall,
+            windows: { floors: 5, cols: 4, color: S.glass },
+            antenna: st === 3 ? 8 : 0,
           },
+        ];
+      if (st === 3)
+        // Tour de verre effilée.
+        return [
+          { size: 0.7, h: 30, color: shade(S.wall, -0.1), windows: { floors: 4, cols: 4, color: S.glass } },
+          { size: 0.52, z: 30, h: 44 + v * 14, color: S.wall, windows: { floors: 7, cols: 3, color: S.glass } },
+          { size: 0.3, z: 74 + v * 14, h: 16, color: shade(S.wall, 0.2), antenna: 18 },
         ];
       return [
         {
           size: 0.74,
           h: 52 + v * 14,
-          color: shade(PALETTE.commercial, -0.1),
-          windows: { floors: 8, cols: 4, color: PALETTE.windowC },
+          color: shade(S.wall, -0.1),
+          windows: { floors: 8, cols: 4, color: S.glass },
         },
         {
           size: 0.48,
           z: 52 + v * 14,
           h: 24 + v2 * 14,
-          color: PALETTE.commercial,
-          windows: { floors: 4, cols: 3, color: PALETTE.windowC },
+          color: S.wall,
+          windows: { floors: 4, cols: 3, color: S.glass },
           antenna: 14,
+          ...(st === 1 ? { roof: 'hip' as const, roofColor: '#7b7d7d', roofHeight: 10, antenna: 0 } : {}),
         },
       ];
+    }
     case 'I': {
+      if (tile.spec === 1) {
+        // Ferme : grange rouge, silos, tracteur.
+        return ([
+          { ox: -0.18, oy: -0.16, size: 0.42, h: 10 + tile.density * 2, color: '#a93226', roof: 'hip', roofColor: '#641e16', roofHeight: 9, windows: { floors: 1, cols: 2, color: '#fdebd0' } },
+          { ox: 0.26, oy: -0.26, size: 0.16, h: 22 + tile.density * 4, color: '#d5d8dc', blob: { r: 4, color: '#aab7b8' } },
+          ...(tile.density >= 2 ? [{ ox: 0.26, oy: 0.0, size: 0.14, h: 18, color: '#d5d8dc', blob: { r: 3.5, color: '#aab7b8' } }] : []),
+          { ox: 0.18, oy: 0.3, size: 0.12, h: 4, color: '#27ae60' },
+        ] as Prism[]).sort(byDepth);
+      }
+      if (tile.spec === 2) {
+        // Scierie : hangar en bois, piles de rondins, cheminée.
+        return ([
+          { ox: -0.3, oy: -0.3, size: 0.12, h: 26 + tile.density * 4, color: '#7b7d7d' },
+          { size: 0.62, h: 10 + tile.density * 4, color: '#a0522d', roof: 'hip', roofColor: '#6e2c00', roofHeight: 7, windows: { floors: 1, cols: 3, color: '#f5cba7' } },
+          { ox: 0.32, oy: 0.18, size: 0.22, h: 4, color: '#8b5a2b' },
+          { ox: 0.32, oy: 0.18, size: 0.18, z: 4, h: 3, color: '#a0522d' },
+          { ox: 0.1, oy: 0.34, size: 0.2, h: 4, color: '#8b5a2b' },
+        ] as Prism[]).sort(byDepth);
+      }
+      if (tile.spec === 3) {
+        // Campus de haute technologie : verre bleu, toit végétalisé, antenne.
+        return [
+          { size: 0.8, h: 12 + tile.density * 6, color: '#2e86c1', roofColor: '#58d68d', windows: { floors: 1 + tile.density, cols: 5, color: '#d6eaf8' } },
+          { ox: -0.16, oy: -0.16, size: 0.3, z: 12 + tile.density * 6, h: 8, color: '#5dade2', windows: { floors: 1, cols: 2, color: '#ebf5fb' }, antenna: 12 },
+        ];
+      }
       const blocks: Prism[] = [];
       const chimneys = tile.density;
       // Cheminées à l'arrière (dessinées avant le bloc qui les masque partiellement).
@@ -479,21 +607,33 @@ function baseBuildingFor(tile: Tile): Prism[] {
         { ox: 0.3, oy: 0.18, size: 0.16, z: 16, h: 8, color: '#f1c40f', stripe: { at: 3, height: 2, color: '#16a085' } },
       ];
     case 'PARK':
+      if (look === 'christmas')
+        // Décembre : grand sapin décoré au centre du parc.
+        return [
+          tree(-0.26, -0.22, 1.1, foliage(0, gx, gy)),
+          tree(0.24, -0.26, 0.9, foliage(1, gx, gy)),
+          { size: 0.34, h: 3, color: '#6e4b2a', roof: 'hip', roofColor: '#145a32', roofHeight: 26 },
+          { size: 0.02, z: 29, h: 0.5, color: '#f1c40f', blob: { r: 2.4, color: '#f7dc6f' } },
+          tree(-0.22, 0.26, 0.95, foliage(2, gx, gy)),
+          tree(0.26, 0.22, 1.15, foliage(3, gx, gy)),
+        ];
       return [
-        tree(-0.26, -0.22, 1.1),
-        tree(0.24, -0.26, 0.9, '#239b56'),
-        { size: 0.18, h: 2, color: '#85929e', blob: { r: 3, color: '#5dade2' } },
-        tree(-0.22, 0.26, 0.95, '#239b56'),
-        tree(0.26, 0.22, 1.15),
+        tree(-0.26, -0.22, 1.1, foliage(0, gx, gy)),
+        tree(0.24, -0.26, 0.9, foliage(1, gx, gy)),
+        { size: 0.18, h: 2, color: '#85929e', blob: { r: 3, color: look === 'winter' ? '#d6eaf8' : '#5dade2' } },
+        tree(-0.22, 0.26, 0.95, foliage(2, gx, gy)),
+        tree(0.26, 0.22, 1.15, foliage(3, gx, gy)),
       ];
     case 'FOREST': {
       // Forêt dense : 4 à 5 arbres de tailles variées.
       const trees: Prism[] = [];
       const n = 4 + (v > 0.5 ? 1 : 0);
       for (let k = 0; k < n; k++) {
-        const ox = hash01(tile.x, tile.y, 40 + k) * 0.7 - 0.35;
-        const oy = hash01(tile.x, tile.y, 60 + k) * 0.7 - 0.35;
-        trees.push(tree(ox, oy, 0.85 + hash01(tile.x, tile.y, 80 + k) * 0.6, k % 2 ? '#1e8449' : '#196f3d'));
+        const ox = hash01(gx, gy, 40 + k) * 0.7 - 0.35;
+        const oy = hash01(gx, gy, 60 + k) * 0.7 - 0.35;
+        // Les conifères (un arbre sur trois) restent verts toute l'année.
+        const pine = hash01(gx, gy, 20 + k) < 0.33;
+        trees.push(pine ? fir(ox, oy, 0.85 + hash01(gx, gy, 80 + k) * 0.6) : tree(ox, oy, 0.85 + hash01(gx, gy, 80 + k) * 0.6, foliage(k, gx, gy)));
       }
       return trees.sort(byDepth);
     }
@@ -632,13 +772,65 @@ function baseBuildingFor(tile: Tile): Prism[] {
         { size: 0.48, z: 40, h: 34, color: '#d4ac0d', windows: { floors: 5, cols: 2, color: '#fcf3cf' } },
         { size: 0.3, z: 74, h: 22, color: '#f1c40f', windows: { floors: 3, cols: 1, color: '#fcf3cf' }, antenna: 22 },
       ];
+    case 'HIGHSCHOOL':
+      return [
+        { ox: -0.26, oy: -0.26, size: 0.2, h: 34, color: '#ba4a00', windows: { floors: 4, cols: 1, color: '#fdebd0' }, antenna: 8 },
+        { size: 0.86, h: 22, color: '#ca6f1e', windows: { floors: 3, cols: 5, color: '#fdebd0' }, roofColor: '#a04000' },
+      ];
+    case 'PARKING': {
+      // Voitures garées en épi (déterministes).
+      const cars: Prism[] = [];
+      const colors = ['#e74c3c', '#ecf0f1', '#3498db', '#f39c12', '#2c3e50', '#16a085'];
+      for (let k = 0; k < 6; k++) {
+        if (hash01(gx, gy, 100 + k) < 0.25) continue;
+        const ox = -0.3 + (k % 3) * 0.3;
+        const oy = k < 3 ? -0.22 : 0.22;
+        cars.push({ ox, oy, size: 0.16, h: 4, color: colors[Math.floor(hash01(gx, gy, 120 + k) * colors.length)] });
+      }
+      cars.push({ ox: 0.42, oy: -0.42, size: 0.04, h: 12, color: '#2c3e50' }, { ox: 0.42, oy: -0.42, size: 0.12, z: 12, h: 6, color: '#2874a6', stripe: { at: 2, height: 2, color: '#ffffff' } });
+      return cars.sort(byDepth);
+    }
+    case 'TREATMENT':
+      return [
+        // Bassins (au sol), bâtiment technique et digesteurs.
+        { ox: -0.26, oy: -0.28, size: 0.22, h: 16, color: '#85929e', blob: { r: 5.5, color: '#aab7b8' } },
+        { ox: 0.24, oy: 0.22, size: 0.3, h: 10, color: '#d5d8dc', windows: { floors: 1, cols: 2, color: '#d6eaf8' } },
+      ];
+    case 'STATION':
+      return ([
+        // Gare : bâtiment voyageurs à horloge et marquise au-dessus des quais.
+        { ox: -0.26, oy: -0.26, size: 0.36, h: 16, color: '#cd6155', roof: 'hip', roofColor: '#7b241c', roofHeight: 8, windows: { floors: 1, cols: 2, color: '#fdebd0' } },
+        { ox: -0.4, oy: -0.1, size: 0.1, h: 28, color: '#a93226', stripe: { at: 20, height: 4, color: '#fdfefe' } },
+        { ox: 0.3, oy: 0.3, size: 0.04, h: 11, color: '#566573' },
+        { ox: -0.05, oy: 0.3, size: 0.04, h: 11, color: '#566573' },
+        { ox: 0.14, oy: 0.3, size: 0.4, z: 11, h: 1.5, color: '#d5d8dc' },
+      ] as Prism[]).sort(byDepth);
+    case 'HOTEL':
+      return [
+        { size: 0.66, h: 64 + v * 10, color: '#8e44ad', windows: { floors: 9, cols: 3, color: '#f5eef8' } },
+        { ox: 0.0, oy: 0.0, size: 0.4, z: 64 + v * 10, h: 7, color: '#f1c40f', stripe: { at: 2, height: 2, color: '#8e44ad' } },
+        { ox: 0.36, oy: 0.36, size: 0.18, h: 3, color: '#a569bd' },
+      ];
+    case 'RESORT': {
+      // Parasols colorés et serviettes sur le sable.
+      const items: Prism[] = [];
+      const cols = ['#e74c3c', '#f1c40f', '#3498db', '#2ecc71', '#e67e22'];
+      for (let k = 0; k < 4; k++) {
+        const ox = -0.28 + (k % 2) * 0.5 + (hash01(gx, gy, 140 + k) - 0.5) * 0.1;
+        const oy = -0.24 + Math.floor(k / 2) * 0.48;
+        items.push({ ox, oy, size: 0.03, h: 9, color: '#fdfefe' });
+        items.push({ ox, oy, size: 0.3, z: 9, h: 0.6, color: '#fdfefe', roof: 'hip', roofColor: cols[(k + Math.floor(v * 5)) % cols.length], roofHeight: 4 });
+        items.push({ ox: ox + 0.12, oy: oy + 0.1, size: 0.12, h: 0.6, color: cols[(k + 2) % cols.length] });
+      }
+      return items.sort(byDepth);
+    }
     case 'GRASS': {
       // Arbres épars sur l'herbe (déterministes) : la campagne n'est plus vide.
       if (v > 0.1) return [];
       const n = v < 0.04 ? 2 : 1;
       const trees: Prism[] = [];
       for (let k = 0; k < n; k++) {
-        trees.push(tree(hash01(tile.x, tile.y, 11 + k) * 0.6 - 0.3, hash01(tile.x, tile.y, 21 + k) * 0.6 - 0.3, 0.8 + v2 * 0.5, v2 > 0.5 ? '#1e8449' : '#239b56'));
+        trees.push(tree(hash01(gx, gy, 11 + k) * 0.6 - 0.3, hash01(gx, gy, 21 + k) * 0.6 - 0.3, 0.8 + v2 * 0.5, foliage(k, gx, gy)));
       }
       return trees.sort(byDepth);
     }
@@ -686,7 +878,7 @@ function strip(batch: PathBatch, key: string, p0: Point, p1: Point, w: number) {
 const ROAD_SURFACE = { ROAD: PALETTE.asphalt, AVENUE: PALETTE.avenue, HIGHWAY: PALETTE.highway } as const;
 
 function addRoad(batch: PathBatch, tiles: Tile[], size: number, tile: Tile, origin: IsoOrigin) {
-  const d = tileDiamond(tile.x, tile.y, origin);
+  const d = groundDiamond(tiles, size, tile, origin);
   const kind = tile.type as RoadType;
   const diamond = [d.top, d.right, d.bottom, d.left];
   if (tile.lake) {
@@ -757,6 +949,12 @@ function addRoad(batch: PathBatch, tiles: Tile[], size: number, tile: Tile, orig
       path.lineTo(b.x, b.y);
     }
   }
+  // Tramway (rails noyés dans l'avenue) et passage à niveau.
+  if (tile.line & LINE_TRAM) addRails(batch, tiles, size, tile, d, true, true);
+  if (tile.line & LINE_RAIL) {
+    batch.poly('fill:#5d6d7e', footprintPts(center, 0.5));
+    addRails(batch, tiles, size, tile, d, true);
+  }
 }
 
 function footprintPts(center: Point, size: number): Point[] {
@@ -764,8 +962,167 @@ function footprintPts(center: Point, size: number): Point[] {
   return [f.top, f.right, f.bottom, f.left];
 }
 
-function addGround(batch: PathBatch, tiles: Tile[], size: number, tile: Tile, origin: IsoOrigin) {
+/** Tuile voisine (ou null hors carte). */
+const at = (tiles: Tile[], size: number, x: number, y: number) => (x >= 0 && y >= 0 && x < size && y < size ? tiles[y * size + x] : null);
+
+/** Une route peut descendre en rampe vers une route voisine d'un niveau plus bas. */
+const rampable = (t: Tile | null): t is Tile => !!t && isRoadType(t.type) && !t.lake && !isTunnel(t);
+
+/** Hauteur de chaque sommet du losange : les routes en pente forment des rampes. */
+export function cornerHeights(tiles: Tile[], size: number, tile: Tile) {
+  const z = zOf(tile);
+  const c = { top: z, right: z, bottom: z, left: z };
+  if (!rampable(tile)) return c;
+  const low = (n: Tile | null) => rampable(n) && n.elev === tile.elev - 1;
+  const L = z - LEVEL_H;
+  if (low(at(tiles, size, tile.x + 1, tile.y))) c.right = c.bottom = L;
+  if (low(at(tiles, size, tile.x - 1, tile.y))) c.left = c.top = L;
+  if (low(at(tiles, size, tile.x, tile.y + 1))) c.bottom = c.left = L;
+  if (low(at(tiles, size, tile.x, tile.y - 1))) c.top = c.right = L;
+  return c;
+}
+
+/** Losange de sol d'une tuile, sommets à leur hauteur. */
+function groundDiamond(tiles: Tile[], size: number, tile: Tile, origin: IsoOrigin) {
   const d = tileDiamond(tile.x, tile.y, origin);
+  const c = cornerHeights(tiles, size, tile);
+  return { top: up(d.top, c.top), right: up(d.right, c.right), bottom: up(d.bottom, c.bottom), left: up(d.left, c.left) };
+}
+
+/**
+ * Falaises du relief : faces verticales sur les deux côtés visibles (avant
+ * gauche et avant droit) quand la voisine est plus basse, et jusqu'au socle
+ * sur les bords de la carte. Les portails de tunnel s'y découpent.
+ */
+function addCliffs(batch: PathBatch, tiles: Tile[], size: number, tile: Tile, origin: IsoOrigin) {
+  const base = tileDiamond(tile.x, tile.y, origin);
+  const c = cornerHeights(tiles, size, tile);
+  const wet = tile.type === 'LAKE' || tile.lake;
+  const rock = tile.elev >= 2;
+  const sides: { n: Tile | null; a: 'left' | 'bottom'; b: 'bottom' | 'right'; na: 'top' | 'left'; nb: 'right' | 'top'; key: string }[] = [
+    // y+1 : arête gauche → bas ; chez la voisine, son arête haut → droite.
+    { n: at(tiles, size, tile.x, tile.y + 1), a: 'left', b: 'bottom', na: 'top', nb: 'right', key: 'L' },
+    // x+1 : arête bas → droite ; chez la voisine, son arête gauche → haut.
+    { n: at(tiles, size, tile.x + 1, tile.y), a: 'bottom', b: 'right', na: 'left', nb: 'top', key: 'R' },
+  ];
+  for (const s of sides) {
+    const za = c[s.a];
+    const zb = c[s.b];
+    let na: number;
+    let nb: number;
+    if (!s.n) {
+      na = -CLIFF_DEPTH;
+      nb = -CLIFF_DEPTH;
+    } else {
+      const nc = cornerHeights(tiles, size, s.n);
+      na = nc[s.na];
+      nb = nc[s.nb];
+    }
+    if (za <= na + 0.5 && zb <= nb + 0.5) continue;
+    const pa = base[s.a];
+    const pb = base[s.b];
+    const face = [up(pa, za), up(pb, zb), up(pb, Math.min(zb, nb)), up(pa, Math.min(za, na))];
+    const key = !s.n ? (wet ? 'cliffW' : 'cliff') : rock ? 'rock' : 'cliff';
+    batch.poly(key + s.key, face);
+    // Strate d'herbe en haut de la falaise.
+    if (s.n && !wet && tile.type !== 'SAND') strip(batch, 'deco:' + shade(PALETTE.grassBorder, -0.15), up(pa, za - 1.2), up(pb, zb - 1.2), 0.9);
+    // Portail de tunnel : la route voisine plus basse s'enfonce dans la montagne.
+    if (s.n && isTunnel(tile) && isRoadType(s.n.type) && !isTunnel(s.n)) {
+      const m = lerp(pa, pb, 0.5);
+      const zl = Math.min(za, na);
+      const hw = 0.28;
+      const p0 = lerp(pa, pb, 0.5 - hw);
+      const p1 = lerp(pa, pb, 0.5 + hw);
+      const arch: Point[] = [up(p0, zl), up(p0, zl + 8), up(lerp(p0, m, 0.5), zl + 11), up(m, zl + 12), up(lerp(m, p1, 0.5), zl + 11), up(p1, zl + 8), up(p1, zl)];
+      batch.poly('deco:#8e9eab', arch.map((p, k) => (k === 0 || k === arch.length - 1 ? p : up(p, 2))));
+      batch.poly('deco:#1c2833', arch);
+    }
+  }
+}
+
+/**
+ * Voie ferrée : ballast, traverses et deux rails vers chaque voisine ferroviaire
+ * (même logique de raccords que les routes). `over` = rails posés sur la chaussée.
+ */
+function addRails(batch: PathBatch, tiles: Tile[], size: number, tile: Tile, d: { top: Point; right: Point; bottom: Point; left: Point }, over: boolean, tram = false) {
+  const center = mid(d.top, d.bottom);
+  const link = (n: Tile | null) => !!n && (tram ? n.type === 'AVENUE' && (n.line & LINE_TRAM) !== 0 : isRail(n));
+  const edges = [
+    { on: link(at(tiles, size, tile.x + 1, tile.y)), a: d.right, b: d.bottom },
+    { on: link(at(tiles, size, tile.x - 1, tile.y)), a: d.left, b: d.top },
+    { on: link(at(tiles, size, tile.x, tile.y + 1)), a: d.bottom, b: d.left },
+    { on: link(at(tiles, size, tile.x, tile.y - 1)), a: d.top, b: d.right },
+  ];
+  if (!edges.some((e) => e.on)) {
+    edges[0].on = true;
+    edges[1].on = true;
+  }
+  const gauge = tram ? 0.07 : 0.09;
+  for (const e of edges) {
+    if (!e.on) continue;
+    const m = mid(e.a, e.b);
+    const side = { x: (e.b.x - e.a.x) * gauge, y: (e.b.y - e.a.y) * gauge };
+    if (!over) strip(batch, 'deco:#9a8478', center, m, 4.2);
+    // Traverses.
+    if (!over || tram) {
+      for (const t of [0.2, 0.5, 0.8]) {
+        const p = lerp(center, m, t);
+        strip(batch, 'deco:' + (over ? '#566573' : '#6e4b2a'), add(p, { x: side.x * 1.6, y: side.y * 1.6 }), add(p, { x: -side.x * 1.6, y: -side.y * 1.6 }), 0.7);
+      }
+    }
+    for (const sgn of [1, -1]) {
+      const o = { x: side.x * sgn, y: side.y * sgn };
+      strip(batch, 'deco:' + (tram ? '#2c3e50' : '#d5d8dc'), add(center, o), add(m, o), tram ? 0.45 : 0.55);
+    }
+  }
+}
+
+/** Ellipse posée au sol (bassins, piscines), approchée par un polygone. */
+function groundEllipse(c: Point, r: number): Point[] {
+  const pts: Point[] = [];
+  for (let k = 0; k < 14; k++) {
+    const a = (k / 14) * Math.PI * 2;
+    pts.push({ x: c.x + Math.cos(a) * r, y: c.y + Math.sin(a) * r * 0.5 });
+  }
+  return pts;
+}
+
+/** Sommet de colline / montagne : herbe rase, roche et neige sur les sommets. */
+function addHill(batch: PathBatch, tile: Tile, diamond: Point[]) {
+  const color = tile.elev >= 3 ? PALETTE.rock : shade(PALETTE.grass, -0.12);
+  batch.poly('fill:' + color, diamond);
+  batch.poly('stroke:' + shade(color, -0.12), diamond);
+  if (tile.elev >= 3) {
+    // Calotte de neige au sommet (toute l'année).
+    const c = mid(diamond[0], diamond[2]);
+    batch.poly('deco:#f4f6f7', diamond.map((p) => lerp(c, p, 0.55)));
+  }
+}
+
+/** Fleurs au printemps, feuilles mortes à l'automne, sur l'herbe. */
+function addFlowers(batch: PathBatch, tile: Tile, d: { top: Point; right: Point; bottom: Point; left: Point }) {
+  if (look !== 'spring' && look !== 'autumn') return;
+  const gx = ogx(tile);
+  const gy = ogy(tile);
+  if (hash01(gx, gy, 5) > 0.35) return;
+  const center = mid(d.top, d.bottom);
+  const colors = look === 'spring' ? ['#f7dc6f', '#ec7063', '#ffffff', '#bb8fce'] : ['#d35400', '#e67e22', '#b9770e'];
+  for (let k = 0; k < 5; k++) {
+    const u = hash01(gx, gy, 30 + k) - 0.5;
+    const w = hash01(gx, gy, 50 + k) - 0.5;
+    const p = { x: center.x + (u - w) * HALF_W * 1.4, y: center.y + (u + w) * HALF_H * 1.4 };
+    const c = colors[Math.floor(hash01(gx, gy, 70 + k) * colors.length)];
+    batch.poly('deco:' + c, [
+      { x: p.x, y: p.y - 1.3 },
+      { x: p.x + 1.6, y: p.y },
+      { x: p.x, y: p.y + 1.3 },
+      { x: p.x - 1.6, y: p.y },
+    ]);
+  }
+}
+
+function addGround(batch: PathBatch, tiles: Tile[], size: number, tile: Tile, origin: IsoOrigin) {
+  const d = tileDiamond(tile.x, tile.y, origin, zOf(tile));
   const diamond = [d.top, d.right, d.bottom, d.left];
   const center = mid(d.top, d.bottom);
   const pave = () => {
@@ -777,7 +1134,9 @@ function addGround(batch: PathBatch, tiles: Tile[], size: number, tile: Tile, or
     case 'ROAD':
     case 'AVENUE':
     case 'HIGHWAY':
-      addRoad(batch, tiles, size, tile, origin);
+      // Tunnel : la route passe sous la montagne, on ne voit que la montagne.
+      if (isTunnel(tile)) addHill(batch, tile, diamond);
+      else addRoad(batch, tiles, size, tile, origin);
       break;
     case 'LAKE': {
       batch.poly('water:' + PALETTE.lake, diamond);
@@ -810,6 +1169,12 @@ function addGround(batch: PathBatch, tiles: Tile[], size: number, tile: Tile, or
         batch.poly('fill:' + PALETTE.zoneLot[tile.type], diamond);
         const inset = footprint(center, 0.86, 0);
         batch.poly('zone:' + PALETTE.zoneBorder[tile.type], [inset.top, inset.right, inset.bottom, inset.left]);
+      } else if (tile.type === 'I' && tile.spec === 1) {
+        // Champs : bandes de culture alternées.
+        batch.poly('fill:' + (look === 'winter' || look === 'christmas' ? '#a3876b' : look === 'summer' ? '#e9c46a' : '#7dbb5a'), diamond);
+        for (let k = 1; k < 5; k++) strip(batch, 'deco:' + (look === 'summer' ? '#c9a227' : '#5e8f3e'), lerp(d.top, d.left, k / 5), lerp(d.right, d.bottom, k / 5), 1.2);
+      } else if (tile.type === 'I' && tile.spec === 3) {
+        batch.poly('fill:' + PALETTE.grass, diamond);
       } else {
         batch.poly('fill:' + PALETTE.pavement, diamond);
       }
@@ -880,10 +1245,64 @@ function addGround(batch: PathBatch, tiles: Tile[], size: number, tile: Tile, or
       batch.poly('fill:#27ae60', diamond);
       batch.poly('stroke:#1e8449', diamond);
       break;
+    case 'RAIL':
+      batch.poly('fill:' + (tile.elev >= 2 ? shade(PALETTE.grass, -0.12) : PALETTE.grass), diamond);
+      batch.poly('stroke:' + PALETTE.grassBorder, diamond);
+      addRails(batch, tiles, size, tile, d, false);
+      break;
+    case 'STATION':
+      pave();
+      // Quai le long des voies.
+      batch.poly('fill:#d5d8dc', footprintPts(add(center, { x: HALF_W * 0.2, y: HALF_H * 0.2 }), 0.5));
+      addRails(batch, tiles, size, tile, d, false);
+      break;
+    case 'PARKING': {
+      batch.poly('fill:#5d6d7e', diamond);
+      batch.poly('stroke:#d5d8dc', diamond);
+      for (const s of [-0.15, 0.15]) {
+        for (let k = 0; k < 4; k++) {
+          const a = lerp(lerp(d.top, d.left, 0.15 + k * 0.23), lerp(d.right, d.bottom, 0.15 + k * 0.23), 0.5 + s - 0.12);
+          const b = lerp(lerp(d.top, d.left, 0.15 + k * 0.23), lerp(d.right, d.bottom, 0.15 + k * 0.23), 0.5 + s + 0.12);
+          strip(batch, 'deco:#ecf0f1', a, b, 0.4);
+        }
+      }
+      break;
+    }
+    case 'TREATMENT':
+      pave();
+      for (const [ox, oy] of [
+        [-0.1, 0.2],
+        [0.22, -0.12],
+      ]) {
+        const c = add(center, { x: (ox - oy) * HALF_W, y: (ox + oy) * HALF_H });
+        batch.poly('fill:#95a5a6', groundEllipse(c, 9));
+        batch.poly('water:#5d8a6e', groundEllipse(c, 7.5));
+      }
+      break;
+    case 'HIGHSCHOOL': {
+      pave();
+      // Terrain de sport.
+      const c = add(center, { x: 0, y: HALF_H * 0.45 });
+      batch.poly('fill:#c0392b', footprintPts(c, 0.42));
+      batch.poly('zone:#ecf0f1', footprintPts(c, 0.34));
+      break;
+    }
+    case 'HOTEL':
+      pave();
+      batch.poly('water:#5dade2', footprintPts(add(center, { x: HALF_W * 0.4, y: HALF_H * 0.4 }), 0.3));
+      break;
+    case 'RESORT':
+      batch.poly('fill:#f7e7b4', diamond);
+      batch.poly('stroke:' + PALETTE.sandBorder, diamond);
+      break;
     default:
       if (tile.type === 'GRASS') {
-        batch.poly('fill:' + PALETTE.grass, diamond);
-        batch.poly('stroke:' + PALETTE.grassBorder, diamond);
+        if (tile.elev >= 2) addHill(batch, tile, diamond);
+        else {
+          batch.poly('fill:' + PALETTE.grass, diamond);
+          batch.poly('stroke:' + PALETTE.grassBorder, diamond);
+          addFlowers(batch, tile, d);
+        }
       } else pave();
   }
 
@@ -892,23 +1311,22 @@ function addGround(batch: PathBatch, tiles: Tile[], size: number, tile: Tile, or
   // Contamination radioactive : voile jaune-vert, plus fort près de l'accident.
   if (tile.rad > 0) batch.poly(`tint:#b7d433:${(0.2 + tile.rad * 0.04).toFixed(2)}`, diamond);
 
-  // Falaises sur les bords sud-ouest et sud-est de la carte (bleues sous l'eau).
-  const drop = { x: 0, y: CLIFF_DEPTH };
-  const wet = tile.type === 'LAKE' || tile.lake;
-  if (tile.y === size - 1) batch.poly(wet ? 'cliffWL' : 'cliffL', [d.left, d.bottom, add(d.bottom, drop), add(d.left, drop)]);
-  if (tile.x === size - 1) batch.poly(wet ? 'cliffWR' : 'cliffR', [d.bottom, d.right, add(d.right, drop), add(d.bottom, drop)]);
+  // Falaises : relief et bords de la carte (bleues sous l'eau).
+  addCliffs(batch, tiles, size, tile, origin);
 }
 
 function flushGround(canvas: SkCanvas, batch: PathBatch) {
   // Ordre : falaises, eau, remplissages, contours, détails, voiles.
   const order = (k: string) =>
-    k.startsWith('cliff') ? 0 : k.startsWith('water:') ? 1 : k.startsWith('fill:') ? 2 : k.startsWith('stroke:') ? 3 : k.startsWith('tint:') ? 5 : 4;
+    k.startsWith('cliff') || k.startsWith('rock') ? 0 : k.startsWith('water:') ? 1 : k.startsWith('fill:') ? 2 : k.startsWith('stroke:') ? 3 : k.startsWith('tint:') ? 5 : 4;
   const entries = batch.detachAll().sort((a, b) => order(a[0]) - order(b[0]));
   for (const [key, path] of entries) {
     if (key === 'cliffL') canvas.drawPath(path, fillPaint(PALETTE.cliffLeft));
     else if (key === 'cliffR') canvas.drawPath(path, fillPaint(PALETTE.cliffRight));
     else if (key === 'cliffWL') canvas.drawPath(path, fillPaint(PALETTE.lakeDeep));
     else if (key === 'cliffWR') canvas.drawPath(path, fillPaint(shade(PALETTE.lakeDeep, -0.25)));
+    else if (key === 'rockL') canvas.drawPath(path, fillPaint(shade(PALETTE.rock, -0.18)));
+    else if (key === 'rockR') canvas.drawPath(path, fillPaint(shade(PALETTE.rock, -0.4)));
     else if (key === 'curb') canvas.drawPath(path, strokePaint(PALETTE.curb, 1.5));
     else if (key === 'rail') canvas.drawPath(path, strokePaint('#ecf0f1', 2));
     else if (key.startsWith('water:')) canvas.drawPath(path, fillPaint(key.slice(6)));
@@ -1005,7 +1423,7 @@ export type Block = { x0: number; x1: number; y0: number; y1: number };
 
 function tileCenter(t: Tile, origin: IsoOrigin): Point {
   const p = gridToWorld(t.x, t.y, origin);
-  return { x: p.x, y: p.y + HALF_H };
+  return { x: p.x, y: p.y + HALF_H - zOf(t) };
 }
 
 function worldRect(gridSize: number) {
@@ -1033,10 +1451,20 @@ function eachTile(tiles: Tile[], gridSize: number, b: Block, fn: (t: Tile) => vo
 /** Sol d'un bloc (herbe, eau, routes, parcelles, falaises). */
 export function buildGroundPicture(tiles: Tile[], gridSize: number, b: Block) {
   const origin = getOrigin(gridSize);
+  lookSize = gridSize;
   return createPicture((canvas) => {
-    const ground = new PathBatch();
-    eachTile(tiles, gridSize, b, (t) => addGround(ground, tiles, gridSize, t, origin));
-    flushGround(canvas, ground);
+    // Niveau par niveau : un sol plus haut recouvre toujours ce qui est derrière et plus bas.
+    let maxLevel = 0;
+    eachTile(tiles, gridSize, b, (t) => {
+      if (t.type !== 'LAKE' && t.elev > maxLevel) maxLevel = t.elev;
+    });
+    for (let level = 0; level <= maxLevel; level++) {
+      const ground = new PathBatch();
+      eachTile(tiles, gridSize, b, (t) => {
+        if ((t.type === 'LAKE' ? 0 : (t.elev ?? 0)) === level) addGround(ground, tiles, gridSize, t, origin);
+      });
+      flushGround(canvas, ground);
+    }
   }, worldRect(gridSize));
 }
 
@@ -1046,6 +1474,7 @@ export function buildGroundPicture(tiles: Tile[], gridSize: number, b: Block) {
  */
 export function buildShadowPicture(tiles: Tile[], gridSize: number, b?: Block) {
   const origin = getOrigin(gridSize);
+  lookSize = gridSize;
   const block = b ?? { x0: 0, x1: gridSize - 1, y0: 0, y1: gridSize - 1 };
   return createPicture((canvas) => {
     const shadows = Skia.PathBuilder.Make();
@@ -1060,10 +1489,113 @@ export function buildShadowPicture(tiles: Tile[], gridSize: number, b?: Block) {
 }
 
 /** Bâtiments (et indicateurs) d'un bloc, dans l'ordre row-major. */
+/** Équipements qui fonctionnent sans électricité (pas d'éclair « sans courant »). */
+const NO_POWER_NEEDED = new Set(['PARK', 'BUSSTOP', 'PARKING', 'RESORT']);
+
+/**
+ * Le sol d'une tuile surélevée doit masquer le pied des bâtiments situés juste
+ * derrière et plus bas : il est alors redessiné dans le calque des bâtiments.
+ */
+function needsGroundRedraw(tiles: Tile[], size: number, t: Tile): boolean {
+  if (t.type === 'LAKE' || !t.elev) return false;
+  for (const [dx, dy] of [
+    [-1, 0],
+    [0, -1],
+    [-1, -1],
+  ]) {
+    const n = at(tiles, size, t.x + dx, t.y + dy);
+    if (n && zOf(n) < zOf(t) && buildingFor(n).length) return true;
+  }
+  return false;
+}
+
+/** Point de la grille (vue) projeté à l'écran, à la hauteur z. */
+function gridPoint(gx: number, gy: number, origin: IsoOrigin, z: number): Point {
+  return { x: origin.originX + (gx - gy) * HALF_W, y: origin.originY + (gx + gy) * HALF_H - z };
+}
+
+/** Longueur du pont (tuiles de route sur l'eau alignées) qui contient la tuile, selon un axe. */
+function bridgeRun(tiles: Tile[], size: number, t: Tile, axis: 0 | 1): [number, number] {
+  const isDeck = (n: Tile | null) => !!n && n.lake && isRoadType(n.type);
+  let a = axis ? t.y : t.x;
+  let b = a;
+  while (isDeck(axis ? at(tiles, size, t.x, a - 1) : at(tiles, size, a - 1, t.y))) a--;
+  while (isDeck(axis ? at(tiles, size, t.x, b + 1) : at(tiles, size, b + 1, t.y))) b++;
+  return [a, b];
+}
+
+/** Pont suspendu (4 tuiles ou plus) : pylônes rouges et câbles porteurs avec suspentes. */
+function drawSuspension(canvas: SkCanvas, tiles: Tile[], size: number, t: Tile, origin: IsoOrigin) {
+  for (const axis of [0, 1] as const) {
+    const [a, b] = bridgeRun(tiles, size, t, axis);
+    if (b - a + 1 < 4) continue;
+    const pos = axis ? t.y : t.x;
+    const p0 = a + 1.5;
+    const p1 = b - 0.5;
+    const H = 42;
+    const height = (s: number) => {
+      if (s <= p0) return 4 + ((s - a) / (p0 - a)) * (H - 4);
+      if (s >= p1) return 4 + ((b + 1 - s) / (b + 1 - p1)) * (H - 4);
+      const m = (p0 + p1) / 2;
+      const k = (s - m) / ((p1 - p0) / 2);
+      return 9 + (H - 9) * k * k;
+    };
+    const cable = strokePaint('#ecf0f1', 1.1);
+    const hanger = strokePaint('rgba(236,240,241,0.7)', 0.5);
+    for (const side of [-0.42, 0.42]) {
+      const pt = (s: number, z: number) => (axis ? gridPoint(t.x + 0.5 + side, s, origin, z) : gridPoint(s, t.y + 0.5 + side, origin, z));
+      for (let k = 0; k < 4; k++) {
+        const s0 = pos + k / 4;
+        const s1 = pos + (k + 1) / 4;
+        const q0 = pt(s0, height(s0));
+        const q1 = pt(s1, height(s1));
+        canvas.drawLine(q0.x, q0.y, q1.x, q1.y, cable);
+        const deck = pt(s0, 2);
+        canvas.drawLine(q0.x, q0.y, deck.x, deck.y, hanger);
+      }
+      // Pylône : deux montants reliés par une traverse.
+      if (pos === a + 1 || pos === b - 1) {
+        const foot = pt(pos + 0.5, 0);
+        const top = pt(pos + 0.5, H + 4);
+        const leg = strokePaint('#c0392b', 3);
+        canvas.drawLine(foot.x, foot.y, top.x, top.y, leg);
+        if (side > 0) {
+          const other = axis ? gridPoint(t.x + 0.5 - 0.42, pos + 0.5, origin, H + 2) : gridPoint(pos + 0.5, t.y + 0.5 - 0.42, origin, H + 2);
+          const here = axis ? gridPoint(t.x + 0.5 + 0.42, pos + 0.5, origin, H + 2) : gridPoint(pos + 0.5, t.y + 0.5 + 0.42, origin, H + 2);
+          canvas.drawLine(other.x, other.y, here.x, here.y, strokePaint('#a93226', 2.5));
+        }
+      }
+    }
+  }
+}
+
+/** Mâts de caténaire du tramway, barrières des passages à niveau. */
+function drawLineFurniture(canvas: SkCanvas, t: Tile, center: Point) {
+  if (t.line & LINE_TRAM && (ogx(t) + ogy(t)) % 2 === 0) {
+    const foot = add(center, { x: -HALF_W * 0.62, y: -HALF_H * 0.05 });
+    canvas.drawLine(foot.x, foot.y, foot.x, foot.y - 15, strokePaint('#566573', 1.1));
+    canvas.drawLine(foot.x, foot.y - 14, foot.x + HALF_W * 0.55, foot.y - 14 + HALF_H * 0.1, strokePaint('#2c3e50', 0.6));
+  }
+  if (t.line & LINE_RAIL) {
+    for (const s of [-1, 1]) {
+      const foot = add(center, { x: s * HALF_W * 0.58, y: -s * HALF_H * 0.2 });
+      canvas.drawLine(foot.x, foot.y, foot.x, foot.y - 9, strokePaint('#2c3e50', 1));
+      canvas.drawLine(foot.x, foot.y - 8, foot.x - s * 12, foot.y - 6, strokePaint('#e74c3c', 1.4));
+      canvas.drawCircle(foot.x, foot.y - 10, 1.4, fillPaint('#e74c3c'));
+    }
+  }
+}
+
 export function buildBuildingPicture(tiles: Tile[], gridSize: number, b: Block) {
   const origin = getOrigin(gridSize);
+  lookSize = gridSize;
   return createPicture((canvas) => {
     eachTile(tiles, gridSize, b, (t) => {
+      if (needsGroundRedraw(tiles, gridSize, t)) {
+        const batch = new PathBatch();
+        addGround(batch, tiles, gridSize, t, origin);
+        flushGround(canvas, batch);
+      }
       const prisms = buildingFor(t);
       const center = tileCenter(t, origin);
       let top = 0;
@@ -1071,7 +1603,9 @@ export function buildBuildingPicture(tiles: Tile[], gridSize: number, b: Block) 
         drawPrism(canvas, center, prism);
         top = Math.max(top, prismTop(prism));
       }
-      const needsPower = isZone(t) || (isFacility(t.type) && t.type !== 'PARK' && t.type !== 'BUSSTOP' && !isPlant(t.type));
+      if (t.lake && isRoadType(t.type)) drawSuspension(canvas, tiles, gridSize, t, origin);
+      if (t.line) drawLineFurniture(canvas, t, center);
+      const needsPower = isZone(t) || (isFacility(t.type) && !NO_POWER_NEEDED.has(t.type) && !isPlant(t.type));
       if (needsPower && !t.powered) drawNoPower(canvas, center, top);
       else if (isZone(t) && t.density > 0 && !t.water) drawNoWater(canvas, center, top);
       if (isZone(t) && t.garbage >= 5) drawGarbage(canvas, center);
@@ -1088,6 +1622,7 @@ export function buildBuildingPicture(tiles: Tile[], gridSize: number, b: Block) 
  */
 export function buildLightsPicture(tiles: Tile[], gridSize: number, b: Block) {
   const origin = getOrigin(gridSize);
+  lookSize = gridSize;
   return createPicture((canvas) => {
     const eraser = Skia.Paint();
     eraser.setBlendMode(BlendMode.Clear);
@@ -1184,6 +1719,7 @@ function addSilhouette(mask: SkPathBuilder, prisms: Prism[], center: Point) {
  */
 export function buildOccluderPicture(tiles: Tile[], gridSize: number, vx: number, vy: number, radius = 5) {
   const origin = getOrigin(gridSize);
+  lookSize = gridSize;
   return createPicture((canvas) => {
     const eraser = Skia.Paint();
     eraser.setBlendMode(BlendMode.Clear);
@@ -1206,7 +1742,7 @@ export function buildSnowMask(tiles: Tile[], gridSize: number, roads: boolean): 
   const p = Skia.PathBuilder.Make();
   for (const t of tiles) {
     if (t.type === 'LAKE' || (!roads && isRoadType(t.type))) continue;
-    const d = tileDiamond(t.x, t.y, origin);
+    const d = tileDiamond(t.x, t.y, origin, zOf(t));
     p.addPoly([d.top, d.right, d.bottom, d.left], true);
   }
   return p.detach();
@@ -1291,7 +1827,7 @@ export function buildDataPicture(
         bld = Skia.PathBuilder.Make();
         buckets.set(color, bld);
       }
-      const d = tileDiamond(tiles[i].x, tiles[i].y, origin);
+      const d = tileDiamond(tiles[i].x, tiles[i].y, origin, zOf(tiles[i]));
       bld.addPoly([d.top, d.right, d.bottom, d.left], true);
     }
     for (const [color, bld] of buckets) {
@@ -1306,13 +1842,13 @@ export function buildDataPicture(
  * Aperçu d'un glisser (rectangle de zonage, route droite) : losanges teintés de
  * la couleur de l'outil, en rouge là où c'est impossible.
  */
-export function buildPreviewPicture(gridSize: number, cells: { x: number; y: number; ok: boolean }[], color: string) {
+export function buildPreviewPicture(gridSize: number, cells: { x: number; y: number; ok: boolean; z?: number }[], color: string) {
   const origin = getOrigin(gridSize);
   return createPicture((canvas) => {
     const okPath = Skia.PathBuilder.Make();
     const badPath = Skia.PathBuilder.Make();
     for (const c of cells) {
-      const d = tileDiamond(c.x, c.y, origin);
+      const d = tileDiamond(c.x, c.y, origin, c.z ?? 0);
       (c.ok ? okPath : badPath).addPoly([d.top, d.right, d.bottom, d.left], true);
     }
     const ok = okPath.detach();
@@ -1343,6 +1879,10 @@ export const COVERAGE_COLORS: Record<ServiceType, string> = {
   INCINERATOR: '#a1887f',
   RECYCLING: '#66bb6a',
   BUSSTOP: '#f39c12',
+  HIGHSCHOOL: '#e67e22',
+  PARKING: '#2874a6',
+  TREATMENT: '#48c9b0',
+  STATION: '#a93226',
 };
 
 /**
@@ -1356,7 +1896,7 @@ export function buildCoveragePicture(tiles: Tile[], gridSize: number, service: S
     for (let i = 0; i < tiles.length; i++) {
       const c = coverage[i];
       if (c <= 0) continue;
-      const d = tileDiamond(tiles[i].x, tiles[i].y, origin);
+      const d = tileDiamond(tiles[i].x, tiles[i].y, origin, zOf(tiles[i]));
       levels[c > 0.75 ? 2 : c > 0.5 ? 1 : 0].addPoly([d.top, d.right, d.bottom, d.left], true);
     }
     const color = COVERAGE_COLORS[service];

@@ -1,7 +1,8 @@
 import { PaintStyle, Skia, type SkCanvas, type SkPathBuilder } from '@shopify/react-native-skia';
 
 import { getOrigin, HALF_H, HALF_W } from './iso';
-import { isRoadType, isZone, type Tile } from './map';
+import { LEVEL_H } from '../sim/constants';
+import { isRail, isRoadType, isTunnel, isZone, LINE_TRAM, type Tile } from './map';
 import { shade } from './palette';
 import { buildingHeight } from './renderer';
 import { pointToView, vectorToView } from './rotation';
@@ -75,16 +76,29 @@ export type FireSpot = { gx: number; gy: number; seed: number; z: number };
 /** Personnes qui attendent à un arrêt de bus. */
 export type Waiting = { gx: number; gy: number; color: number };
 
+/** Véhicules sur rails ou sur l'eau : tramway, train, voilier, cargo. */
+export const LINE_KIND_TRAM = 0;
+export const LINE_KIND_TRAIN = 1;
+export const LINE_KIND_SAIL = 2;
+export const LINE_KIND_SHIP = 3;
+/** Une rame (ou un bateau) qui fait la navette sur une boucle fermée. */
+export type LineVehicle = { kind: number; gx: number[]; gy: number[]; cum: number[]; total: number; speed: number; cars: number; phase: number };
+
 export type AgentsScene = {
   agents: Agent[];
   fires: FireSpot[];
   lights: TrafficLight[];
   metro: MetroLine[];
   waiting?: Waiting[];
+  /** Hauteur du sol au centre de chaque tuile (en niveaux ; < -50 = tunnel), coordonnées d'origine. */
+  heights?: number[];
+  lines?: LineVehicle[];
 };
 
 export const CAR_COLORS = ['#e74c3c', '#ecf0f1', '#3498db', '#f39c12', '#8e44ad', '#2c3e50', '#16a085', '#d35400'];
-export const SHIRT_COLORS = ['#e67e22', '#9b59b6', '#3498db', '#e74c3c', '#ecf0f1', '#1abc9c'];
+export const SHIRT_COLORS = ['#e67e22', '#9b59b6', '#3498db', '#e74c3c', '#ecf0f1', '#1abc9c', '#ff5fa2'];
+/** Chemise à fleurs des touristes (dernière couleur). */
+const TOURIST_SHIRT = 6;
 
 /** Tables de teintes précalculées côté JS (le worklet ne fait que les lire). */
 const BODY = [...CAR_COLORS, '#f5f5f5', '#c0392b', '#f1c40f', '#ecf0f1', '#ffffff', '#1e8449', '#e67e22'];
@@ -117,8 +131,17 @@ export function agentsSignature(tiles: Tile[], population: number): string {
   for (let i = 0; i < tiles.length; i++) {
     const t = tiles[i];
     if (isRoadType(t.type)) {
-      h = Math.imul(h ^ (i * 3 + t.type.length), 16777619);
+      h = Math.imul(h ^ (i * 3 + t.type.length + t.line * 7 + t.elev * 13), 16777619);
       roads++;
+    } else if (
+      t.type === 'RAIL' ||
+      t.type === 'STATION' ||
+      t.type === 'HOTEL' ||
+      t.type === 'RESORT' ||
+      t.type === 'PORT' ||
+      t.type === 'AIRPORT'
+    ) {
+      h = Math.imul(h ^ (i * 17 + t.type.length), 16777619);
     } else if (
       t.type === 'POLICE' ||
       t.type === 'FIRE' ||
@@ -559,6 +582,170 @@ function metroLines(tiles: Tile[]): MetroLine[] {
   return lines;
 }
 
+/** Hauteur au centre de chaque tuile : niveau du sol, rampes à mi-hauteur, tunnels masqués. */
+function groundHeights(tiles: Tile[], size: number): number[] {
+  const h = new Array<number>(tiles.length).fill(0);
+  for (let i = 0; i < tiles.length; i++) {
+    const t = tiles[i];
+    if (t.type === 'LAKE' || t.lake) continue;
+    if (isTunnel(t)) {
+      h[i] = -100;
+      continue;
+    }
+    let z = t.elev;
+    if (isRoadType(t.type)) {
+      for (const n of neighbours4(i, size, tiles.length)) {
+        const o = n >= 0 ? tiles[n] : null;
+        if (o && isRoadType(o.type) && !o.lake && !isTunnel(o) && o.elev === t.elev - 1) z = t.elev - 0.5;
+      }
+    }
+    h[i] = z;
+  }
+  return h;
+}
+
+/** Hauteur (px) du sol sous un point de la grille (coordonnées d'origine), -1 dans un tunnel. Worklet. */
+export function heightAt(h: number[] | undefined, size: number, gx: number, gy: number): number {
+  'worklet';
+  if (!h) return 0;
+  const x = Math.floor(gx);
+  const y = Math.floor(gy);
+  if (x < 0 || y < 0 || x >= size || y >= size) return 0;
+  const c = h[y * size + x];
+  if (c < -50) return -1;
+  let z = c;
+  const fx = gx - x - 0.5;
+  const fy = gy - y - 0.5;
+  const nx = x + (fx > 0 ? 1 : -1);
+  const ny = y + (fy > 0 ? 1 : -1);
+  if (nx >= 0 && nx < size) {
+    const n = h[y * size + nx];
+    if (n > -50 && Math.abs(n - c) <= 0.51) z += (n - c) * Math.abs(fx);
+  }
+  if (ny >= 0 && ny < size) {
+    const n = h[ny * size + x];
+    if (n > -50 && Math.abs(n - c) <= 0.51) z += (n - c) * Math.abs(fy);
+  }
+  return z * LEVEL_H;
+}
+
+/** Plus long trajet (approximatif) dans un réseau : BFS depuis un bout, puis depuis l'autre bout. */
+function longestPath(start: number, size: number, on: Uint8Array): number[] {
+  const bfs = (from: number) => {
+    const prev = new Int32Array(on.length).fill(-1);
+    prev[from] = from;
+    const queue = [from];
+    let last = from;
+    for (let h = 0; h < queue.length; h++) {
+      const cur = queue[h];
+      last = cur;
+      for (const n of neighbours4(cur, size, on.length)) {
+        if (n < 0 || !on[n] || prev[n] !== -1) continue;
+        prev[n] = cur;
+        queue.push(n);
+      }
+    }
+    return { last, prev, seen: queue };
+  };
+  const a = bfs(start).last;
+  const r = bfs(a);
+  const path = [r.last];
+  while (path[path.length - 1] !== a && path.length < 400) path.push(r.prev[path[path.length - 1]]);
+  return path.reverse();
+}
+
+/** Navette aller-retour sur une suite de tuiles (décalée d'un côté dans chaque sens). */
+function shuttle(kind: number, seq: number[], size: number, side: number, speed: number, cars: number, phase: number): LineVehicle {
+  const back = seq.slice().reverse();
+  const [fx, fy] = offsetPolyline(seq, size, () => side);
+  const [bx, by] = offsetPolyline(back, size, () => side);
+  const gx = fx.concat(bx);
+  const gy = fy.concat(by);
+  const { cum, total } = closeLoop(gx, gy);
+  return { kind, gx, gy, cum, total, speed, cars, phase };
+}
+
+/** Composantes connexes d'un réseau (tuiles marquées dans `on`). */
+function components(size: number, on: Uint8Array): number[][] {
+  const seen = new Uint8Array(on.length);
+  const out: number[][] = [];
+  for (let i = 0; i < on.length; i++) {
+    if (!on[i] || seen[i]) continue;
+    const comp = [i];
+    seen[i] = 1;
+    for (let h = 0; h < comp.length; h++) {
+      for (const n of neighbours4(comp[h], size, on.length)) {
+        if (n < 0 || !on[n] || seen[n]) continue;
+        seen[n] = 1;
+        comp.push(n);
+      }
+    }
+    out.push(comp);
+  }
+  return out;
+}
+
+/** Trams, trains, voiliers et cargos. */
+function lineVehicles(tiles: Tile[], size: number, rand: () => number, scale: number): LineVehicle[] {
+  const out: LineVehicle[] = [];
+  const n = tiles.length;
+  // Tramway : une ou plusieurs rames par ligne posée sur les avenues.
+  const tram = new Uint8Array(n);
+  for (let i = 0; i < n; i++) if (tiles[i].type === 'AVENUE' && tiles[i].line & LINE_TRAM) tram[i] = 1;
+  for (const comp of components(size, tram)) {
+    if (comp.length < 4) continue;
+    const seq = longestPath(comp[0], size, tram);
+    if (seq.length < 3) continue;
+    const count = Math.max(1, Math.min(4, Math.round((seq.length / 10) * Math.max(0.5, scale))));
+    for (let k = 0; k < count; k++) out.push(shuttle(LINE_KIND_TRAM, seq, size, 0.06, 0.9, 2, (k / count) * seq.length * 2));
+  }
+  // Trains : sur chaque réseau ferré qui dessert au moins une gare.
+  const rail = new Uint8Array(n);
+  for (let i = 0; i < n; i++) if (isRail(tiles[i])) rail[i] = 1;
+  for (const comp of components(size, rail)) {
+    if (comp.length < 4 || !comp.some((i) => tiles[i].type === 'STATION')) continue;
+    const seq = longestPath(comp[0], size, rail);
+    if (seq.length < 3) continue;
+    const count = seq.length > 30 ? 2 : 1;
+    for (let k = 0; k < count; k++) out.push(shuttle(LINE_KIND_TRAIN, seq, size, 0.08, 1.6, 4, (k / count) * seq.length * 2));
+  }
+  // Bateaux : voiliers sur les lacs, cargo au départ du port.
+  const water = new Uint8Array(n);
+  for (let i = 0; i < n; i++) if (tiles[i].type === 'LAKE') water[i] = 1;
+  const walk = (start: number, len: number) => {
+    const seq = [start];
+    let prev = -1;
+    let cur = start;
+    for (let k = 0; k < len; k++) {
+      const opts = neighbours4(cur, size, n).filter((m) => m >= 0 && water[m] && m !== prev);
+      if (!opts.length) break;
+      const straight = prev >= 0 ? cur + (cur - prev) : -1;
+      const next = opts.includes(straight) && rand() < 0.75 ? straight : opts[Math.floor(rand() * opts.length)];
+      seq.push(next);
+      prev = cur;
+      cur = next;
+    }
+    return seq;
+  };
+  for (const comp of components(size, water)) {
+    if (comp.length < 12) continue;
+    const sails = Math.min(4, Math.round((comp.length / 45) * Math.max(0.5, scale)));
+    for (let k = 0; k < sails; k++) {
+      const seq = walk(comp[Math.floor(rand() * comp.length)], 8 + Math.floor(rand() * 10));
+      if (seq.length >= 3) out.push(shuttle(LINE_KIND_SAIL, seq, size, 0, 0.35 + rand() * 0.15, 1, rand() * 20));
+    }
+  }
+  for (const t of tiles) {
+    if (t.type !== 'PORT' || !t.powered) continue;
+    const i = t.y * size + t.x;
+    const dock = neighbours4(i, size, n).find((m) => m >= 0 && water[m]);
+    if (dock === undefined) continue;
+    const seq = walk(dock, 16);
+    if (seq.length >= 4) out.push(shuttle(LINE_KIND_SHIP, seq, size, 0, 0.45, 1, rand() * 10));
+  }
+  return out;
+}
+
 type Prepared = { drafts: Draft[]; scene: Omit<AgentsScene, 'agents'>; rand: () => number };
 
 /**
@@ -571,7 +758,7 @@ export type SceneOptions = { events?: { x: number; y: number }[]; winter?: boole
 function prepare(tiles: Tile[], size: number, population: number, riders: number, scale: number, issues: number[], opts: SceneOptions = {}): Prepared {
   const fires: FireSpot[] = tiles
     .filter((t) => t.fire > 0)
-    .map((t, k) => ({ gx: t.x + 0.5, gy: t.y + 0.5, seed: k * 1.7, z: Math.max(6, buildingHeight(t) - 6) }));
+    .map((t, k) => ({ gx: t.x + 0.5, gy: t.y + 0.5, seed: k * 1.7, z: Math.max(6, buildingHeight(t) - 6) + (t.type === 'LAKE' ? 0 : t.elev * LEVEL_H) }));
   const metro = metroLines(tiles);
   const isRoad = new Uint8Array(tiles.length);
   const multi = new Uint8Array(tiles.length);
@@ -586,7 +773,9 @@ function prepare(tiles: Tile[], size: number, population: number, riders: number
     roadSpeed[i] = type === 'HIGHWAY' ? 1.7 : type === 'AVENUE' ? 1.25 : 1;
   }
   const rand = mulberry32(roads.length * 7919 + population);
-  if (roads.length < 2) return { drafts: [], scene: { fires, lights: [], metro, waiting: [] }, rand };
+  const heights = groundHeights(tiles, size);
+  const lines = opts.crowdOnly ? [] : lineVehicles(tiles, size, rand, scale);
+  if (roads.length < 2) return { drafts: [], scene: { fires, lights: [], metro, waiting: [], heights, lines }, rand };
 
   // Carrefours (≥ 3 routes) : chacun a ses feux tricolores.
   const inter = new Uint8Array(tiles.length);
@@ -624,7 +813,7 @@ function prepare(tiles: Tile[], size: number, population: number, riders: number
   };
   if (opts.crowdOnly) {
     addCrowds();
-    return { drafts, scene: { fires: [], lights: [], metro: [], waiting: [] }, rand };
+    return { drafts, scene: { fires: [], lights: [], metro: [], waiting: [], heights }, rand };
   }
 
   // 1. Navetteurs : environ une voiture pour 35 habitants qui ne prennent pas les transports.
@@ -733,7 +922,15 @@ function prepare(tiles: Tile[], size: number, population: number, riders: number
     drafts.push(pedestrian(seq, size, rand, Math.floor(rand() * SHIRT_COLORS.length), inter, bubble));
   }
 
-  return { drafts, scene: { fires, lights, metro, waiting }, rand };
+  // 9. Touristes : chemises à fleurs autour des hôtels, des plages et des grandes attractions.
+  const sights = roadsNear(tiles, roads, size, (t) => t.type === 'HOTEL' || t.type === 'RESORT' || t.type === 'LANDMARK' || t.type === 'STADIUM' || t.type === 'FAIR');
+  const tourists = Math.round(Math.min(40, sights.length * 3) * scale);
+  for (let p = 0; p < tourists && sights.length; p++) {
+    const seq = randomWalk(pick(sights), size, isRoad, 3 + Math.floor(rand() * 5), rand);
+    if (seq.length >= 2) drafts.push(pedestrian(seq, size, rand, TOURIST_SHIRT, inter, rand() < 0.3 ? BUBBLE_HEART : -1));
+  }
+
+  return { drafts, scene: { fires, lights, metro, waiting, heights, lines }, rand };
 }
 
 /** Construit la scène des PNJ d'un coup (tests, aperçus). */
@@ -1013,20 +1210,23 @@ export function drawAgents(
   const blink = Math.floor(t * 4) % 2 === 0;
 
   // Positions visibles, triées par profondeur (gx + gy) : le premier plan recouvre l'arrière-plan.
-  const visible: { a: number; gx: number; gy: number; ux: number; uy: number; depth: number; stopped: boolean }[] = [];
+  const visible: { a: number; gx: number; gy: number; ux: number; uy: number; depth: number; stopped: boolean; z: number }[] = [];
   for (let a = 0; a < scene.agents.length; a++) {
     const ag = scene.agents[a];
     if (mode === 'lights' && ag.kind === AGENT_PED) continue;
     const p = agentPosition(ag, t);
     if (p.hidden) continue;
+    // Relief : altitude du sol ; dans un tunnel, le véhicule disparaît.
+    const z = heightAt(scene.heights, gridSize, p.gx, p.gy);
+    if (z < 0) continue;
     // Passage dans le repère de la vue (rotation).
     const [gx, gy] = pointToView(p.gx, p.gy, gridSize, rot);
     const [vdx, vdy] = vectorToView(p.dx, p.dy, rot);
     const wx = originX + (gx - gy) * HALF_W;
-    const wy = originY + (gx + gy) * HALF_H;
+    const wy = originY + (gx + gy) * HALF_H - z;
     if (wx < view.x0 || wx > view.x1 || wy < view.y0 || wy > view.y1) continue;
     const len = Math.hypot(p.dx, p.dy) || 1;
-    visible.push({ a, gx, gy, ux: vdx / len, uy: vdy / len, depth: gx + gy, stopped: p.stopped });
+    visible.push({ a, gx, gy, ux: vdx / len, uy: vdy / len, depth: gx + gy, stopped: p.stopped, z });
   }
   visible.sort((p, q) => p.depth - q.depth);
 
@@ -1038,10 +1238,11 @@ export function drawAgents(
     for (const v of visible) {
       const ag = scene.agents[v.a];
       const { gx, gy, ux, uy } = v;
+      const oY = originY - v.z;
       const L = ag.kind === AGENT_BUS ? 0.36 : ag.kind === AGENT_CAR || ag.kind === AGENT_POLICE ? 0.19 : 0.27;
       const vx = -uy;
       const vy = ux;
-      const toS = (qx: number, qy: number, z: number) => ({ x: originX + (qx - qy) * HALF_W, y: originY + (qx + qy) * HALF_H - z });
+      const toS = (qx: number, qy: number, z: number) => ({ x: originX + (qx - qy) * HALF_W, y: oY + (qx + qy) * HALF_H - z });
       const f0 = toS(gx + ux * L + vx * 0.08, gy + uy * L + vy * 0.08, 2.5);
       const f1 = toS(gx + ux * L - vx * 0.08, gy + uy * L - vy * 0.08, 2.5);
       const far0 = toS(gx + ux * (L + 0.9) + vx * 0.28, gy + uy * (L + 0.9) + vy * 0.28, 0);
@@ -1059,6 +1260,8 @@ export function drawAgents(
     canvas.drawPath(flash.detach(), makePaint('#5dade2', 0.35 * night));
     return;
   }
+
+  if (scene.lines?.length) drawLineVehicles(canvas, scene, t, gridSize, view, rot);
 
   const nColors = BODY.length;
   const shadows = Skia.PathBuilder.Make();
@@ -1106,7 +1309,7 @@ export function drawAgents(
   for (const w of scene.waiting ?? []) {
     const [vgx, vgy] = pointToView(w.gx, w.gy, gridSize, rot);
     const wx = originX + (vgx - vgy) * HALF_W;
-    const wy = originY + (vgx + vgy) * HALF_H;
+    const wy = originY + (vgx + vgy) * HALF_H - Math.max(0, heightAt(scene.heights, gridSize, w.gx, w.gy));
     if (wx < view.x0 || wx > view.x1 || wy < view.y0 || wy > view.y1) continue;
     shadows.addCircle(wx + 1.5, wy + 0.5, 1.4);
     shirts[w.color].addRect({ x: wx - 1.1, y: wy - 5, width: 2.2, height: 4 });
@@ -1116,8 +1319,9 @@ export function drawAgents(
   for (const v of visible) {
     const ag = scene.agents[v.a];
     const { gx, gy, ux, uy } = v;
+    const oY = originY - v.z;
     const wx = originX + (gx - gy) * HALF_W;
-    const wy = originY + (gx + gy) * HALF_H;
+    const wy = oY + (gx + gy) * HALF_H;
 
     if (ag.kind === AGENT_PED) {
       const y = wy - (v.stopped ? 0 : Math.abs(Math.sin(t * 9 + v.a * 5)) * 0.8);
@@ -1145,7 +1349,7 @@ export function drawAgents(
       [gx + ux * L - vx * W, gy + uy * L - vy * W],
       [gx - ux * L - vx * W, gy - uy * L - vy * W],
       [gx - ux * L + vx * W, gy - uy * L + vy * W],
-    ].map(([sx, sy]) => ({ x: originX + (sx - sy) * HALF_W + 3, y: originY + (sx + sy) * HALF_H + 1.5 }));
+    ].map(([sx, sy]) => ({ x: originX + (sx - sy) * HALF_W + 3, y: oY + (sx + sy) * HALF_H + 1.5 }));
     shadows.addPoly(sh, true);
 
     // Roues : 4 petits disques sombres sous la caisse.
@@ -1157,33 +1361,33 @@ export function drawAgents(
     ]) {
       const qx = gx + ux * L * l + vx * W * s * 1.02;
       const qy = gy + uy * L * l + vy * W * s * 1.02;
-      wheels.addCircle(originX + (qx - qy) * HALF_W, originY + (qx + qy) * HALF_H - 1.2, 1.5);
+      wheels.addCircle(originX + (qx - qy) * HALF_W, oY + (qx + qy) * HALF_H - 1.2, 1.5);
     }
 
     if (isBus) {
       // Caisse unique haute, bande vitrée continue.
-      addBox(light[c], mid[c], dark[c], gx, gy, 1.5, 9, ux, uy, -L, L, W, originX, originY);
-      addBox(light[c], glass, glassDark, gx, gy, 5, 7.5, ux, uy, -L * 0.98, L * 0.98, W * 1.01, originX, originY);
+      addBox(light[c], mid[c], dark[c], gx, gy, 1.5, 9, ux, uy, -L, L, W, originX, oY);
+      addBox(light[c], glass, glassDark, gx, gy, 5, 7.5, ux, uy, -L * 0.98, L * 0.98, W * 1.01, originX, oY);
     } else if (isTruck) {
       // Cabine à l'avant + caisse/citerne/benne à l'arrière.
       const cargo = ag.kind === AGENT_TRUCK ? COLOR_TRUCK : c;
-      addBox(light[cargo], mid[cargo], dark[cargo], gx, gy, 1.5, 9, ux, uy, -L, L * 0.25, W, originX, originY);
+      addBox(light[cargo], mid[cargo], dark[cargo], gx, gy, 1.5, 9, ux, uy, -L, L * 0.25, W, originX, oY);
       // Ambulance : bande rouge sur les flancs de la cellule sanitaire.
-      if (isAmbulance) addBox(scrap, red, red, gx, gy, 4.5, 6, ux, uy, -L * 0.98, L * 0.2, W * 1.01, originX, originY);
-      addBox(light[c], mid[c], dark[c], gx, gy, 1.5, 7, ux, uy, L * 0.3, L, W * 0.95, originX, originY);
-      addBox(light[c], glass, glassDark, gx, gy, 4.2, 6.6, ux, uy, L * 0.32, L * 0.98, W * 0.97, originX, originY);
+      if (isAmbulance) addBox(scrap, red, red, gx, gy, 4.5, 6, ux, uy, -L * 0.98, L * 0.2, W * 1.01, originX, oY);
+      addBox(light[c], mid[c], dark[c], gx, gy, 1.5, 7, ux, uy, L * 0.3, L, W * 0.95, originX, oY);
+      addBox(light[c], glass, glassDark, gx, gy, 4.2, 6.6, ux, uy, L * 0.32, L * 0.98, W * 0.97, originX, oY);
     } else {
       // Voiture : caisse basse + habitacle vitré en retrait + toit.
-      addBox(light[c], mid[c], dark[c], gx, gy, 1.5, 4.5, ux, uy, -L, L, W, originX, originY);
-      addBox(light[c], glass, glassDark, gx, gy, 4.5, 7.2, ux, uy, -L * 0.45, L * 0.4, W * 0.82, originX, originY);
+      addBox(light[c], mid[c], dark[c], gx, gy, 1.5, 4.5, ux, uy, -L, L, W, originX, oY);
+      addBox(light[c], glass, glassDark, gx, gy, 4.5, 7.2, ux, uy, -L * 0.45, L * 0.4, W * 0.82, originX, oY);
       // Phares (avant) et feux (arrière).
       const hx = gx + ux * L * 1.01;
       const hy = gy + uy * L * 1.01;
-      headlights.addCircle(originX + (hx - hy) * HALF_W, originY + (hx + hy) * HALF_H - 3, 0.9);
+      headlights.addCircle(originX + (hx - hy) * HALF_W, oY + (hx + hy) * HALF_H - 3, 0.9);
       const rx = gx - ux * L * 1.01;
       const ry = gy - uy * L * 1.01;
       // Feux stop plus gros quand la voiture freine (arrêtée au feu).
-      red.addCircle(originX + (rx - ry) * HALF_W, originY + (rx + ry) * HALF_H - 3, v.stopped ? 1.3 : 0.8);
+      red.addCircle(originX + (rx - ry) * HALF_W, oY + (rx + ry) * HALF_H - 3, v.stopped ? 1.3 : 0.8);
     }
 
     // Gyrophares clignotants (police et ambulance bleu/rouge, pompiers rouge).
@@ -1192,7 +1396,7 @@ export function drawAgents(
       const lx = gx + ux * (ag.kind === AGENT_POLICE ? 0 : L * 0.6);
       const ly = gy + uy * (ag.kind === AGENT_POLICE ? 0 : L * 0.6);
       const sx = originX + (lx - ly) * HALF_W;
-      const sy = originY + (lx + ly) * HALF_H - z;
+      const sy = oY + (lx + ly) * HALF_H - z;
       if (ag.kind === AGENT_POLICE || isAmbulance) {
         (blink ? red : blue).addCircle(sx - 1.4, sy, 1.3);
         (blink ? blue : red).addCircle(sx + 1.4, sy, 1.3);
@@ -1202,11 +1406,11 @@ export function drawAgents(
     }
     // Chasse-neige : lame à l'avant et gyrophare orange.
     if (ag.kind === AGENT_PLOW) {
-      addBox(scrap, dark[c], dark[c], gx, gy, 0.5, 3, ux, uy, L * 1.0, L * 1.18, W * 1.35, originX, originY);
+      addBox(scrap, dark[c], dark[c], gx, gy, 0.5, 3, ux, uy, L * 1.0, L * 1.18, W * 1.35, originX, oY);
       if (blink) {
         const lx = gx + ux * L * 0.6;
         const ly = gy + uy * L * 0.6;
-        lamps[LIGHT_YELLOW].addCircle(originX + (lx - ly) * HALF_W, originY + (lx + ly) * HALF_H - 10.2, 1.5);
+        lamps[LIGHT_YELLOW].addCircle(originX + (lx - ly) * HALF_W, oY + (lx + ly) * HALF_H - 10.2, 1.5);
       }
     }
   }
@@ -1241,6 +1445,95 @@ export function drawAgents(
   }
   canvas.drawPath(heads.detach(), makePaint('#f5cba7'));
   for (const b of bubbles) drawBubble(canvas, b.x, b.y, b.kind);
+}
+
+/** Position sur une boucle (coordonnées d'origine) à la distance d. Worklet. */
+function alongLoop(v: LineVehicle, d: number) {
+  'worklet';
+  const dd = mod(d, v.total);
+  let i = 0;
+  while (i < v.cum.length - 2 && v.cum[i + 1] < dd) i++;
+  const seg = v.cum[i + 1] - v.cum[i] || 1;
+  const f = (dd - v.cum[i]) / seg;
+  const dx = v.gx[i + 1] - v.gx[i];
+  const dy = v.gy[i + 1] - v.gy[i];
+  return { gx: v.gx[i] + dx * f, gy: v.gy[i] + dy * f, dx, dy };
+}
+
+/** Trams, trains (rames de plusieurs voitures), voiliers et cargos. Worklet. */
+function drawLineVehicles(canvas: SkCanvas, scene: AgentsScene, t: number, gridSize: number, view: ViewRect, rot: number) {
+  'worklet';
+  const { originX, originY } = getOrigin(gridSize);
+  const top = Skia.PathBuilder.Make();
+  const left = Skia.PathBuilder.Make();
+  const right = Skia.PathBuilder.Make();
+  const topB = Skia.PathBuilder.Make();
+  const leftB = Skia.PathBuilder.Make();
+  const rightB = Skia.PathBuilder.Make();
+  const glassL = Skia.PathBuilder.Make();
+  const glassR = Skia.PathBuilder.Make();
+  const sails = Skia.PathBuilder.Make();
+  const wakes = Skia.PathBuilder.Make();
+  const shadow = Skia.PathBuilder.Make();
+  const scrap = Skia.PathBuilder.Make();
+  const lines = scene.lines ?? [];
+  // Couleurs par type : tram vert et blanc, train rouge et gris, coques blanches ou rouges.
+  for (const v of lines) {
+    const head = t * v.speed + v.phase;
+    for (let car = 0; car < v.cars; car++) {
+      const p = alongLoop(v, head - car * 0.62);
+      const z = v.kind >= LINE_KIND_SAIL ? 0 : heightAt(scene.heights, gridSize, p.gx, p.gy);
+      if (z < 0) continue;
+      const [gx, gy] = pointToView(p.gx, p.gy, gridSize, rot);
+      const [dx, dy] = vectorToView(p.dx, p.dy, rot);
+      const len = Math.hypot(dx, dy) || 1;
+      const ux = dx / len;
+      const uy = dy / len;
+      const oY = originY - z;
+      const wx = originX + (gx - gy) * HALF_W;
+      const wy = oY + (gx + gy) * HALF_H;
+      if (wx < view.x0 - 30 || wx > view.x1 + 30 || wy < view.y0 - 30 || wy > view.y1 + 30) continue;
+      if (v.kind === LINE_KIND_TRAM || v.kind === LINE_KIND_TRAIN) {
+        const loco = v.kind === LINE_KIND_TRAIN && car === 0;
+        const L = 0.29;
+        const W = v.kind === LINE_KIND_TRAM ? 0.11 : 0.12;
+        const sx = originX + (gx - gy) * HALF_W + 3;
+        const sy = oY + (gx + gy) * HALF_H + 1.5;
+        shadow.addCircle(sx, sy, 4);
+        if (loco) addBox(topB, leftB, rightB, gx, gy, 1, 9, ux, uy, -L, L, W, originX, oY);
+        else addBox(top, left, right, gx, gy, 1, 8.5, ux, uy, -L, L, W, originX, oY);
+        addBox(scrap, glassL, glassR, gx, gy, 4.5, 7, ux, uy, -L * 0.9, L * 0.9, W * 1.01, originX, oY);
+      } else {
+        // Bateau : coque effilée, sillage, voile triangulaire ou conteneurs.
+        const ship = v.kind === LINE_KIND_SHIP;
+        const L = ship ? 0.42 : 0.2;
+        const W = ship ? 0.13 : 0.07;
+        const back = { x: originX + (gx - ux * L * 2 - (gy - uy * L * 2)) * HALF_W, y: oY + (gx - ux * L * 2 + gy - uy * L * 2) * HALF_H };
+        wakes.addCircle(back.x, back.y, ship ? 3.5 : 2);
+        addBox(ship ? topB : top, ship ? leftB : left, ship ? rightB : right, gx, gy, 0, ship ? 4 : 2.5, ux, uy, -L, L, W, originX, oY);
+        if (ship) {
+          addBox(top, left, right, gx, gy, 4, 8, ux, uy, -L * 0.7, L * 0.4, W * 0.8, originX, oY);
+        } else {
+          const m = { x: wx, y: wy - 2.5 };
+          const sway = Math.sin(t * 1.3 + v.phase) * 1.5;
+          sails.addPoly([m, { x: m.x + sway, y: m.y - 14 }, { x: m.x + 7 + sway * 0.5, y: m.y - 1 }], true);
+        }
+      }
+    }
+  }
+  canvas.drawPath(wakes.detach(), makePaint('#ecf0f1', 0.55));
+  canvas.drawPath(shadow.detach(), makePaint('#000000', 0.2));
+  // Les rames et les coques : couleurs fixes (le tram est vert, le train rouge).
+  canvas.drawPath(left.detach(), makePaint('#d5d8dc'));
+  canvas.drawPath(right.detach(), makePaint('#a6acaf'));
+  canvas.drawPath(top.detach(), makePaint('#f8f9f9'));
+  canvas.drawPath(leftB.detach(), makePaint('#c0392b'));
+  canvas.drawPath(rightB.detach(), makePaint('#922b21'));
+  canvas.drawPath(topB.detach(), makePaint('#e74c3c'));
+  canvas.drawPath(glassL.detach(), makePaint('#27ae60'));
+  canvas.drawPath(glassR.detach(), makePaint('#1e8449'));
+  canvas.drawPath(sails.detach(), makePaint('#fdfefe'));
+  scrap.detach();
 }
 
 /**

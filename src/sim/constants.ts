@@ -57,6 +57,10 @@ export const SERVICE_RADIUS: Record<ServiceType, number> = {
   INCINERATOR: 22,
   RECYCLING: 22,
   BUSSTOP: 5,
+  HIGHSCHOOL: 14,
+  PARKING: 4,
+  TREATMENT: 14,
+  STATION: 8,
 };
 
 /** Entretien mensuel. */
@@ -76,6 +80,13 @@ export const UPKEEP: Partial<Record<TileType, number>> = {
   INCINERATOR: 70,
   RECYCLING: 60,
   BUSSTOP: 6,
+  RAIL: 2,
+  HIGHSCHOOL: 90,
+  PARKING: 8,
+  TREATMENT: 70,
+  STATION: 60,
+  HOTEL: 30,
+  RESORT: 15,
   WIND: 12,
   SOLAR: 18,
   NUCLEAR: 380,
@@ -127,6 +138,7 @@ export function fundingOf(t: TileType): FundingKey | null {
     case 'HOSPITAL':
       return 'health';
     case 'SCHOOL':
+    case 'HIGHSCHOOL':
     case 'UNIVERSITY':
       return 'education';
     case 'ROAD':
@@ -134,12 +146,16 @@ export function fundingOf(t: TileType): FundingKey | null {
     case 'HIGHWAY':
     case 'METRO':
     case 'BUSSTOP':
+    case 'RAIL':
+    case 'STATION':
+    case 'PARKING':
       return 'transport';
     case 'POWER':
     case 'WIND':
     case 'SOLAR':
     case 'NUCLEAR':
     case 'WATER':
+    case 'TREATMENT':
       return 'utilities';
     case 'PORT':
     case 'FREIGHT':
@@ -237,6 +253,29 @@ export const VENUE_UNLOCK: Record<VenueType, number> = { MARKET: 0, FAIR: 400, A
 export const VENUE_TOURISM: Record<VenueType, number> = { MARKET: 20, FAIR: 60, ARENA: 120, STADIUM: 200 };
 
 // ---------------------------------------------------------------------------
+// Tourisme, éducation, transports, relief
+// ---------------------------------------------------------------------------
+
+/** Chambres d'un hôtel : sans hôtels, seuls les touristes d'un jour viennent (recettes réduites de moitié). */
+export const HOTEL_ROOMS = 400;
+/** Attrait touristique d'une plage aménagée (visiteurs par mois). */
+export const RESORT_VISITORS = 150;
+/** Recette par visiteur. */
+export const SPEND_PER_VISITOR = 1.6;
+/** Populations nécessaires pour débloquer certains équipements. */
+export const UNLOCK: Partial<Record<TileType, number>> = { HIGHSCHOOL: 1000, STATION: 1500, HOTEL: 800, NUCLEAR: 4000 };
+/** Population à partir de laquelle les commerces de niveau 3 ont besoin d'un parking. */
+export const PARKING_NEEDED_AT = 2500;
+/** Coût d'un niveau de terrassement (monter / abaisser une tuile). */
+export const TERRAFORM_COST = 25;
+/** Hauteur d'un niveau de relief, en pixels écran. */
+export const LEVEL_H = 12;
+/** Une route sur une tuile d'altitude ≥ 2 est un tunnel (coût multiplié). */
+export const TUNNEL_FACTOR = 3;
+/** Coût de la pose du tramway sur une tuile d'avenue. */
+export const TRAM_COST = 40;
+
+// ---------------------------------------------------------------------------
 // Saisons
 // ---------------------------------------------------------------------------
 
@@ -268,6 +307,16 @@ export type ToolId =
   | 'water'
   | 'metro'
   | 'busstop'
+  | 'raise'
+  | 'lower'
+  | 'rail'
+  | 'station'
+  | 'tram'
+  | 'parking'
+  | 'highschool'
+  | 'treatment'
+  | 'hotel'
+  | 'resort'
   | 'wind'
   | 'solar'
   | 'nuclear'
@@ -306,6 +355,8 @@ export type ToolDef = {
 export const TOOLS: ToolDef[] = [
   { id: 'inspect', label: 'Explorer', icon: '🔍', cost: 0, color: '#ecf0f1', group: 'base', places: null },
   { id: 'bulldoze', label: 'Bulldozer', icon: '🚜', cost: 1, color: '#e67e22', group: 'base', places: null },
+  { id: 'raise', label: 'Monter', icon: '⛰️', cost: 25, color: '#a04000', group: 'base', places: null },
+  { id: 'lower', label: 'Creuser', icon: '🕳️', cost: 25, color: '#6e2c00', group: 'base', places: null },
   { id: 'road', label: 'Rue', icon: '🛣️', cost: 10, color: '#95a5a6', group: 'zones', places: 'ROAD' },
   { id: 'avenue', label: 'Avenue', icon: '🛤️', cost: 25, color: '#7f8c8d', group: 'zones', places: 'AVENUE' },
   { id: 'highway', label: 'Autoroute', icon: '🛣', cost: 40, color: '#566573', group: 'zones', places: 'HIGHWAY' },
@@ -319,17 +370,25 @@ export const TOOLS: ToolDef[] = [
   { id: 'water', label: "Château d'eau", icon: '💧', cost: 400, color: '#5dade2', group: 'networks', places: 'WATER' },
   { id: 'metro', label: 'Métro', icon: '🚇', cost: 700, color: '#16a085', group: 'networks', places: 'METRO' },
   { id: 'busstop', label: 'Arrêt de bus', icon: '🚏', cost: 80, color: '#f39c12', group: 'networks', places: 'BUSSTOP' },
+  { id: 'tram', label: 'Tramway', icon: '🚋', cost: 40, color: '#27ae60', group: 'networks', places: null },
+  { id: 'rail', label: 'Voie ferrée', icon: '🚆', cost: 30, color: '#6e2c00', group: 'networks', places: 'RAIL' },
+  { id: 'station', label: 'Gare', icon: '🚉', cost: 2000, color: '#a93226', group: 'networks', places: 'STATION' },
+  { id: 'parking', label: 'Parking', icon: '🅿️', cost: 300, color: '#2874a6', group: 'networks', places: 'PARKING' },
+  { id: 'treatment', label: 'Épuration', icon: '🫧', cost: 1800, color: '#48c9b0', group: 'networks', places: 'TREATMENT' },
   { id: 'port', label: 'Port', icon: '⚓', cost: 5000, color: '#1f618d', group: 'networks', places: 'PORT' },
   { id: 'freight', label: 'Gare de fret', icon: '🚂', cost: 2500, color: '#784212', group: 'networks', places: 'FREIGHT' },
   { id: 'police', label: 'Police', icon: '🚓', cost: 500, color: '#2e4a8a', group: 'services', places: 'POLICE' },
   { id: 'fire', label: 'Pompiers', icon: '🚒', cost: 500, color: '#c0392b', group: 'services', places: 'FIRE' },
   { id: 'hospital', label: 'Hôpital', icon: '🏥', cost: 800, color: '#ecf0f1', group: 'services', places: 'HOSPITAL' },
   { id: 'school', label: 'École', icon: '🏫', cost: 600, color: '#e67e22', group: 'services', places: 'SCHOOL' },
+  { id: 'highschool', label: 'Lycée', icon: '🎒', cost: 1500, color: '#ca6f1e', group: 'services', places: 'HIGHSCHOOL' },
   { id: 'park', label: 'Parc', icon: '🌳', cost: 50, color: '#27ae60', group: 'services', places: 'PARK' },
   { id: 'landfill', label: 'Décharge', icon: '🗑️', cost: 300, color: '#8d6e63', group: 'waste', places: 'LANDFILL' },
   { id: 'incinerator', label: 'Incinérateur', icon: '🔥', cost: 1500, color: '#6d4c41', group: 'waste', places: 'INCINERATOR' },
   { id: 'recycling', label: 'Recyclage', icon: '♻️', cost: 1200, color: '#43a047', group: 'waste', places: 'RECYCLING' },
   { id: 'market', label: 'Marché', icon: '🛒', cost: 900, color: '#e59866', group: 'leisure', places: 'MARKET' },
+  { id: 'resort', label: 'Plage', icon: '🏖️', cost: 400, color: '#f7dc6f', group: 'leisure', places: 'RESORT' },
+  { id: 'hotel', label: 'Hôtel', icon: '🏨', cost: 3000, color: '#af7ac5', group: 'leisure', places: 'HOTEL' },
   { id: 'fair', label: 'Fête foraine', icon: '🎡', cost: 2500, color: '#ec7063', group: 'leisure', places: 'FAIR' },
   { id: 'arena', label: 'Concerts', icon: '🎵', cost: 4000, color: '#8e44ad', group: 'leisure', places: 'ARENA' },
   { id: 'stadium', label: 'Stade', icon: '🏟️', cost: 6000, color: '#e74c3c', group: 'leisure', places: 'STADIUM' },
@@ -349,13 +408,17 @@ export const COVERAGE_TOOL: Partial<Record<ToolId, ServiceType>> = {
   metro: 'METRO',
   park: 'PARK',
   busstop: 'BUSSTOP',
+  highschool: 'HIGHSCHOOL',
+  parking: 'PARKING',
+  treatment: 'TREATMENT',
+  station: 'STATION',
   landfill: 'LANDFILL',
   incinerator: 'INCINERATOR',
   recycling: 'RECYCLING',
 };
 
 /** Vues de données (cartes thématiques, comme dans SimCity). */
-export type DataView = 'none' | 'traffic' | 'pollution' | 'crime' | 'value' | 'garbage' | 'happiness' | 'districts' | 'power';
+export type DataView = 'none' | 'traffic' | 'pollution' | 'crime' | 'value' | 'garbage' | 'happiness' | 'districts' | 'power' | 'water' | 'health';
 export const DATA_VIEWS: { id: DataView; label: string; icon: string }[] = [
   { id: 'none', label: 'Normale', icon: '🗺️' },
   { id: 'traffic', label: 'Trafic', icon: '🚗' },
@@ -365,6 +428,8 @@ export const DATA_VIEWS: { id: DataView; label: string; icon: string }[] = [
   { id: 'garbage', label: 'Déchets', icon: '🗑️' },
   { id: 'happiness', label: 'Satisfaction', icon: '😊' },
   { id: 'power', label: 'Électricité', icon: '⚡' },
+  { id: 'water', label: 'Eau polluée', icon: '🫧' },
+  { id: 'health', label: 'Santé', icon: '🦠' },
   { id: 'districts', label: 'Quartiers', icon: '🏘️' },
 ];
 

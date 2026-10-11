@@ -1,6 +1,7 @@
 import { createEmptyMap } from '../engine/map';
 import { EMPTY_COUNTERS } from '../sim/challenges';
 import { DEFAULT_FUNDING, DEFAULT_ORDINANCES } from '../sim/constants';
+import { EMPTY_RECORDS } from '../sim/records';
 import { deserialize, EMPTY_HISTORY, makePreview, previewType, serialize, type SavedGame } from '../store/persistence';
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- jest.mock ne peut pas utiliser d'import statique
@@ -37,6 +38,12 @@ function game(): SavedGame {
     weather: 'snow',
     cityEvents: [{ kind: 'match', x: 1, y: 2, venue: 'STADIUM', bonus: 3, tourism: 450 }],
     forcedEvents: [{ x: 3, y: 4 }],
+    funDisasters: true,
+    epidemic: { district: 2, severity: 40, months: 3 },
+    missions: [{ id: 4, kind: 'park', district: 1, start: 10, deadline: 22, reward: 600 }],
+    missionSeq: 5,
+    records: { ...EMPTY_RECORDS, population: { value: 900, month: 12 } },
+    timelapse: [{ month: 12, population: 30, size: 2, map: 'gr~g', dens: '0100' }],
   };
 }
 

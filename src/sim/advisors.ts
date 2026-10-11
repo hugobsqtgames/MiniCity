@@ -127,6 +127,65 @@ export function getAdvice(
 
   out.push(...trafficAdvice(tiles, size, a));
 
+  // Santé publique : épidémie, eaux usées.
+  if (s.epidemic > 0) {
+    out.push({
+      id: 'epidemic',
+      advisor: 'services',
+      severity: s.epidemic > 50 ? 3 : 2,
+      title: `Épidémie en cours (${s.epidemic} %)`,
+      text: 'Des habitants tombent malades et quittent le quartier touché. Un hôpital qui couvre la moitié du quartier fait reculer la maladie ; une station d’épuration évite qu’elle revienne.',
+      target: find(tiles, (t, i) => a.maps.health[i] > 0 && t.type === 'R'),
+      view: 'health',
+      tool: 'hospital',
+    });
+  }
+  if (s.waterPollution > 25) {
+    out.push({
+      id: 'water-pollution',
+      advisor: 'environment',
+      severity: s.waterPollution > 50 ? 2 : 1,
+      title: `Lacs pollués à ${s.waterPollution} %`,
+      text: 'Les eaux usées des quartiers et des usines finissent dans les lacs : les rives perdent de la valeur, les plages se vident et les épidémies menacent. Construisez une station d’épuration près des quartiers concernés.',
+      target: find(tiles, (t, i) => t.type === 'LAKE' && a.maps.water[i] > 0.3),
+      view: 'water',
+      tool: 'treatment',
+    });
+  }
+  // Éducation : sans diplômés, pas de bureaux ni de haute technologie.
+  if (pop >= 1500 && s.educationLevel < 35) {
+    out.push({
+      id: 'education-level',
+      advisor: 'services',
+      severity: 2,
+      title: `Niveau d’études faible (${s.educationLevel} %)`,
+      text: pop >= 1000 ? 'Les tours de bureaux réclament des diplômés : complétez les écoles par un lycée (et plus tard l’université).' : 'Construisez des écoles près des quartiers résidentiels.',
+      tool: pop >= 1000 ? 'highschool' : 'school',
+    });
+  }
+  if (s.parkingShortage >= 3) {
+    out.push({
+      id: 'parking',
+      advisor: 'transport',
+      severity: 1,
+      title: `${s.parkingShortage} commerces sans parking`,
+      text: 'Au-delà de 2 500 habitants, les commerces denses ont besoin d’un parking à moins de 4 cases pour devenir des tours de bureaux.',
+      target: find(tiles, (t, i) => t.type === 'C' && t.density >= 2 && a.cov.PARKING[i] === 0),
+      tool: 'parking',
+    });
+  }
+  // Tourisme : des visiteurs sans chambre dépensent moitié moins.
+  if (s.tourists >= 200 && s.hotelGuests < s.tourists * 0.5 && pop >= 800) {
+    out.push({
+      id: 'hotels',
+      advisor: 'culture',
+      severity: 1,
+      title: `${fmt(s.tourists - s.hotelGuests)} touristes sans hôtel`,
+      text: 'Ils repartent le soir et dépensent moitié moins. Un hôtel (400 chambres) double leurs dépenses.',
+      tool: 'hotel',
+    });
+  }
+
   // Énergie.
   if (s.plants === 0 && tiles.some((t) => isZone(t.type))) {
     out.push({ id: 'no-power', advisor: 'energy', severity: 3, title: 'Aucune centrale', text: 'Sans électricité, rien ne pousse. Posez une centrale près des zones : le courant suit routes et zones.', tool: 'power' });

@@ -17,6 +17,7 @@ import { MenuSheet } from './src/ui/MenuSheet';
 import { MiniMap } from './src/ui/MiniMap';
 import { SplashScreen } from './src/ui/SplashScreen';
 import { TileInfo } from './src/ui/TileInfo';
+import { TimelapsePlayer } from './src/ui/TimelapsePlayer';
 import { Toast } from './src/ui/Toast';
 import { Toolbar } from './src/ui/Toolbar';
 import { Tutorial } from './src/ui/Tutorial';
@@ -52,6 +53,7 @@ function Game() {
       )}
       {menuOpen && <MenuSheet onSaveNow={saveNow} lastSavedAt={lastSavedAt} slots={slotActions} />}
       {hydrated && <ChallengeTree />}
+      {hydrated && <TimelapsePlayer />}
       <ConfirmDialog />
       {!hydrated && <SplashScreen />}
     </View>

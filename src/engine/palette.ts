@@ -9,6 +9,7 @@ export const PALETTE = {
   dirtBorder: '#a0703f',
   cliffLeft: '#8e5b34',
   cliffRight: '#6b4224',
+  rock: '#8d9a8f',
 
   asphalt: '#7f8c8d',
   curb: '#95a5a6',

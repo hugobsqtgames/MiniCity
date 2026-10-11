@@ -2,7 +2,7 @@ import { isFacility, isLogistics, isMonument, isPlant, isRoadType, isVenue, isZo
 import { PLANT_OUTPUT, POWER_RANGE, POWER_USE, seasonOf, WATER_LAKE_BONUS, WATER_RANGE } from './constants';
 
 /** Les réseaux (courant et canalisations) suivent les routes, les zones et les bâtiments contigus. */
-const conducts = (t: Tile) => isRoadType(t.type) || isZone(t.type) || isFacility(t.type);
+const conducts = (t: Tile) => isRoadType(t.type) || isZone(t.type) || isFacility(t.type) || t.type === 'RAIL';
 const consumes = (t: Tile) => isZone(t.type) || isFacility(t.type);
 
 /**
@@ -69,7 +69,8 @@ export function plantFactor(type: PlantType, month: number): number {
 }
 
 /** Production d'une centrale ce mois-ci (0 si en panne). */
-export const plantOutput = (t: Tile, month: number) => (isPlant(t.type) && t.flood === 0 ? PLANT_OUTPUT[t.type] * plantFactor(t.type, month) : 0);
+export const plantOutput = (t: Tile, month: number) =>
+  isPlant(t.type) && t.flood === 0 ? PLANT_OUTPUT[t.type] * plantFactor(t.type, month) * (t.type === 'WIND' ? 1 + 0.15 * (t.elev ?? 0) : 1) : 0;
 
 /** Consommation électrique d'une tuile (MW). */
 export function powerUse(t: Tile): number {

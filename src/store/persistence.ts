@@ -11,7 +11,9 @@ import {
   type Taxes,
 } from '../sim/constants';
 import { EMPTY_COUNTERS, type Counters } from '../sim/challenges';
-import type { CityEvent, Demand, Weather } from '../sim/simulation';
+import { MISSIONS, type Mission } from '../sim/missions';
+import { EMPTY_RECORDS, sanitizeRecords, type CityRecords } from '../sim/records';
+import type { CityEvent, Demand, Epidemic, Weather } from '../sim/simulation';
 
 /** Stockage 100 % local (AsyncStorage) — aucune donnée ne quitte le téléphone. */
 /** Ancienne sauvegarde unique (migrée vers l'emplacement 1). */
@@ -48,7 +50,18 @@ export type SavedGame = {
   cityEvents: CityEvent[];
   /** Événements payés par le maire, pas encore tenus. */
   forcedEvents: { x: number; y: number }[];
+  /** Catastrophes « fun » (météorite, monstre). */
+  funDisasters: boolean;
+  epidemic: Epidemic | null;
+  missions: Mission[];
+  missionSeq: number;
+  records: CityRecords;
+  timelapse: TimelapseFrame[];
 };
+
+/** Image du timelapse : aperçu de la carte (au plus 50×50) à une date donnée. */
+export type TimelapseFrame = { month: number; population: number; size: number; map: string; dens: string };
+export const TIMELAPSE_MAX = 80;
 
 /** Format compact : une chaîne de caractères par attribut de tuile. */
 type SaveFile = {
@@ -64,6 +77,9 @@ type SaveFile = {
   rad?: string;
   /** Parcelles sinistrées à reconstruire en priorité. */
   ruin?: string;
+  elev?: string;
+  line?: string;
+  spec?: string;
   treasury: number;
   month: number;
   /** v1 : taux unique. */
@@ -84,6 +100,12 @@ type SaveFile = {
   weather?: Weather;
   cityEvents?: CityEvent[];
   forcedEvents?: { x: number; y: number }[];
+  funDisasters?: boolean;
+  epidemic?: Epidemic | null;
+  missions?: Mission[];
+  missionSeq?: number;
+  records?: CityRecords;
+  timelapse?: TimelapseFrame[];
 };
 
 const TYPE_TO_CHAR: Record<TileType, string> = {
@@ -122,6 +144,13 @@ const TYPE_TO_CHAR: Record<TileType, string> = {
   NUCLEAR: 'n',
   PORT: 't',
   FREIGHT: 'x',
+  HIGHSCHOOL: 'j',
+  PARKING: 'q',
+  TREATMENT: 'u',
+  STATION: 'v',
+  RAIL: 'z',
+  HOTEL: 'b',
+  RESORT: 'e',
 };
 const CHAR_TO_TYPE = Object.fromEntries(Object.entries(TYPE_TO_CHAR).map(([k, v]) => [v, k])) as Record<string, TileType>;
 
@@ -140,6 +169,9 @@ export function serialize(game: SavedGame): string {
     flood: digits(game.tiles, (t) => t.flood),
     rad: digits(game.tiles, (t) => t.rad),
     ruin: digits(game.tiles, (t) => (t.value < 0 ? 1 : 0)),
+    elev: digits(game.tiles, (t) => t.elev),
+    line: digits(game.tiles, (t) => t.line),
+    spec: digits(game.tiles, (t) => t.spec),
     treasury: game.treasury,
     month: game.month,
     taxes: game.taxes,
@@ -159,6 +191,12 @@ export function serialize(game: SavedGame): string {
     weather: game.weather,
     cityEvents: game.cityEvents,
     forcedEvents: game.forcedEvents,
+    funDisasters: game.funDisasters,
+    epidemic: game.epidemic,
+    missions: game.missions,
+    missionSeq: game.missionSeq,
+    records: game.records,
+    timelapse: game.timelapse.slice(-TIMELAPSE_MAX),
   };
   return JSON.stringify(file);
 }
@@ -179,6 +217,9 @@ export function deserialize(json: string): SavedGame | null {
       tiles[i].flood = num(f.flood, i);
       tiles[i].rad = num(f.rad, i);
       if (num(f.ruin, i) === 1) tiles[i].value = -1;
+      tiles[i].elev = Math.min(3, num(f.elev, i));
+      tiles[i].line = num(f.line, i) & 3;
+      tiles[i].spec = Math.min(3, num(f.spec, i));
     }
     const legacyTax = f.taxRate ?? DEFAULT_TAXES.R;
     return {
@@ -202,6 +243,12 @@ export function deserialize(json: string): SavedGame | null {
       weather: f.weather ?? 'clear',
       cityEvents: Array.isArray(f.cityEvents) ? f.cityEvents : [],
       forcedEvents: Array.isArray(f.forcedEvents) ? f.forcedEvents : [],
+      funDisasters: f.funDisasters ?? false,
+      epidemic: validEpidemic(f.epidemic),
+      missions: Array.isArray(f.missions) ? f.missions.filter((m) => m && MISSIONS[m.kind] !== undefined && Number.isFinite(m.deadline)) : [],
+      missionSeq: Number.isFinite(f.missionSeq) ? f.missionSeq! : 0,
+      records: f.records ? sanitizeRecords(f.records) : EMPTY_RECORDS,
+      timelapse: Array.isArray(f.timelapse) ? f.timelapse.filter((fr) => fr && typeof fr.map === 'string' && fr.map.length === fr.size * fr.size).slice(-TIMELAPSE_MAX) : [],
     };
   } catch {
     return null;
@@ -240,6 +287,24 @@ export function makePreview(tiles: Tile[], gridSize: number): { preview: string;
 }
 
 export const previewType = (c: string): TileType => CHAR_TO_TYPE[c] ?? 'GRASS';
+
+/** Image de timelapse : types et densités sous-échantillonnés. */
+export function makeFrame(tiles: Tile[], gridSize: number, month: number, population: number): TimelapseFrame {
+  const { preview, previewSize } = makePreview(tiles, gridSize);
+  const step = Math.max(1, Math.ceil(gridSize / 50));
+  let dens = '';
+  for (let y = 0; y < previewSize; y++) {
+    for (let x = 0; x < previewSize; x++) dens += String(tiles[Math.min(gridSize - 1, y * step) * gridSize + Math.min(gridSize - 1, x * step)].density);
+  }
+  return { month, population, size: previewSize, map: preview, dens };
+}
+
+function validEpidemic(e: unknown): Epidemic | null {
+  if (!e || typeof e !== 'object') return null;
+  const { district, severity, months } = e as Epidemic;
+  if (![district, severity, months].every(Number.isFinite) || severity <= 0) return null;
+  return { district, severity: Math.min(100, severity), months };
+}
 
 async function readSlots(): Promise<SlotMeta[]> {
   try {
@@ -323,6 +388,8 @@ export type Settings = {
   haptics: boolean;
   /** Mini-carte affichée. */
   minimap: boolean;
+  /** Ambiance sonore (ville, oiseaux, pluie…). */
+  ambience: boolean;
 };
 export const DEFAULT_SETTINGS: Settings = {
   music: true,
@@ -337,6 +404,7 @@ export const DEFAULT_SETTINGS: Settings = {
   colorblind: false,
   haptics: true,
   minimap: true,
+  ambience: true,
 };
 
 export async function loadSettings(): Promise<Settings> {

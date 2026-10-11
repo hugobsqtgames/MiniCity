@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { AppState } from 'react-native';
 
-import { initAudio, setMusicEnabled, setSfxEnabled } from '../audio/sound';
+import { initAudio, pauseAmbience, setAmbienceEnabled, setMusicEnabled, setSfxEnabled } from '../audio/sound';
 import { deleteSlot, listSlots, loadGame, loadSettings, saveGame, type SlotMeta } from '../store/persistence';
 import { useGameStore } from '../store/useGameStore';
 
@@ -122,6 +122,13 @@ export function usePersistence() {
     const sub = AppState.addEventListener('change', (s) => setMusicEnabled(music && s === 'active'));
     return () => sub.remove();
   }, [hydrated, music]);
+  const ambience = useGameStore((s) => s.settings.ambience);
+  useEffect(() => {
+    if (!hydrated) return;
+    setAmbienceEnabled(ambience);
+    const sub = AppState.addEventListener('change', (s) => pauseAmbience(s !== 'active'));
+    return () => sub.remove();
+  }, [hydrated, ambience]);
 
   const slotActions: SlotActions = { slots, current, refresh, play, saveAs, remove };
   return { hydrated, lastSavedAt, saveNow: autoSave, slotActions };

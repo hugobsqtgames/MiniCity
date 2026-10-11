@@ -1,5 +1,5 @@
-import { BlendMode, Canvas, createPicture, Group, PaintStyle, Path, Picture, Rect, Skia, useClock, type SkPicture } from '@shopify/react-native-skia';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { BlendMode, Canvas, createPicture, Group, PaintStyle, Path, Picture, Rect, Skia, useClock, type SkCanvas, type SkPicture } from '@shopify/react-native-skia';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { StyleSheet, useWindowDimensions, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import {
@@ -32,17 +32,18 @@ import {
   type AgentsScene,
 } from '../engine/agents';
 import { camera as sharedCamera, focusRequest } from '../engine/cameraBridge';
-import { getOrigin, getWorldSize, gridToWorld, HALF_H, HALF_W, screenToTile, worldToGridFloat } from '../engine/iso';
+import { getOrigin, getWorldSize, gridToWorld, HALF_H, HALF_W, worldToGridFloat } from '../engine/iso';
 import { useMapLayers } from '../engine/mapLayers';
-import { isBuildableGround, isFacility, isPlant, isRoadType, isZone } from '../engine/map';
+import { isBuildableGround, isFacility, isPlant, isRoadType, isZone, MAX_ELEV } from '../engine/map';
 import { buildCoveragePicture, buildDataPicture, buildOccluderPicture, buildPreviewPicture, buildSnowMask, COLORS, diamondPath, hueColor } from '../engine/renderer';
 import { fromView, pointFromView, pointToView, remapToView, RotatedTiles, toView, vectorToView } from '../engine/rotation';
 import { useDebounced } from '../hooks/useDebounced';
 import { usePerformanceGovernor } from '../hooks/usePerformanceGovernor';
-import { COVERAGE_TOOL, seasonOf, TOOL_BY_ID } from '../sim/constants';
+import { COVERAGE_TOOL, LEVEL_H, seasonOf, TOOL_BY_ID } from '../sim/constants';
 import { districtMap, localHappiness } from '../sim/districts';
 import { computeCoverage } from '../sim/simulation';
 import { dragTiles, useGameStore, type Tile } from '../store/useGameStore';
+import { setAmbience, type Ambience } from '../audio/sound';
 import { WeatherLayer } from './WeatherLayer';
 
 /** Clé des itinéraires : ils ne sont recalculés que si les routes ou la population (par paliers) changent. */
@@ -187,22 +188,52 @@ function AgentsLayer({
 type Spinner = { kind: 'wind' | 'wheel'; x: number; y: number; seed: number; occ: SkPicture };
 type Burst = { x: number; y: number; big: boolean };
 
+/** Catastrophe animée : trajet (tornade, monstre) ou point d'impact (météorite). */
+type DisasterAnim = { kind: 'tornado' | 'monster' | 'meteor'; path: { x: number; y: number }[]; start: SharedValue<number> };
+/** Piste d'aéroport : départ et direction de décollage (px écran par tuile). */
+type Runway = { x: number; y: number; dx: number; dy: number; seed: number };
+
+/** Avion : fuselage, ailes et dérive vus de dessus, dans la direction (ux, uy). */
+function drawPlane(canvas: SkCanvas, x: number, y: number, ux: number, uy: number, s: number, alpha: number) {
+  'worklet';
+  const vx = -uy;
+  const vy = ux * 0.5;
+  const body = Skia.PathBuilder.Make();
+  body.addPoly(
+    [
+      { x: x + ux * 9 * s, y: y + uy * 9 * s },
+      { x: x + vx * 1.6 * s, y: y + vy * 1.6 * s },
+      { x: x - ux * 8 * s + vx * 1.2 * s, y: y - uy * 8 * s + vy * 1.2 * s },
+      { x: x - ux * 8 * s - vx * 1.2 * s, y: y - uy * 8 * s - vy * 1.2 * s },
+      { x: x - vx * 1.6 * s, y: y - vy * 1.6 * s },
+    ],
+    true,
+  );
+  const wings = Skia.PathBuilder.Make();
+  wings.addPoly([{ x: x + ux * 2 * s, y: y + uy * 2 * s }, { x: x - ux * 3 * s + vx * 9 * s, y: y - uy * 3 * s + vy * 9 * s }, { x: x - ux * 4 * s, y: y - uy * 4 * s }, { x: x - ux * 3 * s - vx * 9 * s, y: y - uy * 3 * s - vy * 9 * s }], true);
+  wings.addPoly([{ x: x - ux * 6 * s, y: y - uy * 6 * s }, { x: x - ux * 8.5 * s + vx * 3.5 * s, y: y - uy * 8.5 * s + vy * 3.5 * s }, { x: x - ux * 8.5 * s - vx * 3.5 * s, y: y - uy * 8.5 * s - vy * 3.5 * s }], true);
+  canvas.drawPath(wings.detach(), hazePaint(alpha, '#bdc3c7'));
+  canvas.drawPath(body.detach(), hazePaint(alpha, '#fdfefe'));
+}
+
 function EffectsLayer({
   haze,
-  tornado,
+  anim,
   clock,
   gridSize,
   spinners,
   bursts,
   night,
+  runways,
 }: {
   haze: { x: number; y: number; v: number }[];
-  tornado: { path: { x: number; y: number }[]; start: SharedValue<number> } | null;
+  anim: DisasterAnim | null;
   clock: SharedValue<number>;
   gridSize: number;
   spinners: Spinner[];
   bursts: Burst[];
   night: SharedValue<number>;
+  runways: Runway[];
 }) {
   const world = getWorldSize(gridSize);
   // Pales d'éoliennes et grandes roues qui tournent, feux d'artifice au-dessus des fêtes.
@@ -277,23 +308,86 @@ function EffectsLayer({
   const picture = useDerivedValue(() => {
     const t = clock.get() / 1000;
     return createPicture((canvas) => {
-      if (tornado) {
-        const elapsed = t - tornado.start.get();
-        if (elapsed >= 0 && elapsed < 9) {
-          const u = (elapsed / 9) * (tornado.path.length - 1);
-          const i = Math.min(tornado.path.length - 2, Math.floor(u));
-          const f = u - i;
-          const p = { x: tornado.path[i].x + (tornado.path[i + 1].x - tornado.path[i].x) * f, y: tornado.path[i].y + (tornado.path[i + 1].y - tornado.path[i].y) * f };
-          // Entonnoir : empilement d'ellipses qui s'élargissent vers le haut et tournoient.
-          for (let k = 0; k < 14; k++) {
-            const r = 4 + k * 2.6;
-            const wob = Math.sin(t * 9 + k * 0.6) * (3 + k * 0.6);
-            canvas.drawOval({ x: p.x + wob - r, y: p.y - 10 - k * 9 - r * 0.3, width: r * 2, height: r * 0.6 }, hazePaint(0.35, '#7f8c8d'));
-          }
+      // Avions : roulage, décollage puis montée, un départ toutes les 18 s par aéroport.
+      for (const r of runways) {
+        const u = ((t + r.seed) % 18) / 18;
+        const dist = u < 0.12 ? (u / 0.12) ** 2 * 1.5 : 1.5 + (u - 0.12) * 34;
+        const z = u < 0.12 ? 0 : Math.min(170, (u - 0.12) * 420);
+        const fade = u > 0.85 ? (1 - u) / 0.15 : 1;
+        const gx = r.x + r.dx * dist;
+        const gy = r.y + r.dy * dist;
+        const len = Math.hypot(r.dx, r.dy) || 1;
+        canvas.drawOval({ x: gx - 8, y: gy - 3, width: 16, height: 6 }, hazePaint(0.25 * fade * Math.max(0.2, 1 - z / 200), '#000000'));
+        drawPlane(canvas, gx, gy - z - 3, r.dx / len, r.dy / len, 1 + z / 400, 0.95 * fade);
+      }
+      if (!anim) return;
+      const elapsed = t - anim.start.get();
+      const along = (dur: number) => {
+        const u = Math.min(1, Math.max(0, elapsed / dur)) * (anim.path.length - 1);
+        const i = Math.min(anim.path.length - 2, Math.floor(u));
+        const f = u - i;
+        const a = anim.path[i];
+        const b = anim.path[Math.min(anim.path.length - 1, i + 1)];
+        return { x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f, dx: b.x - a.x };
+      };
+      if (anim.kind === 'tornado' && elapsed >= 0 && elapsed < 9 && anim.path.length > 1) {
+        const p = along(9);
+        // Entonnoir : empilement d'ellipses qui s'élargissent vers le haut et tournoient.
+        for (let k = 0; k < 14; k++) {
+          const r = 4 + k * 2.6;
+          const wob = Math.sin(t * 9 + k * 0.6) * (3 + k * 0.6);
+          canvas.drawOval({ x: p.x + wob - r, y: p.y - 10 - k * 9 - r * 0.3, width: r * 2, height: r * 0.6 }, hazePaint(0.35, '#7f8c8d'));
+        }
+      } else if (anim.kind === 'monster' && elapsed >= 0 && elapsed < 14 && anim.path.length > 1) {
+        // Monstre géant : il avance en se dandinant, la queue balaie, il rugit.
+        const p = along(14);
+        const dir = p.dx >= 0 ? 1 : -1;
+        const bob = Math.abs(Math.sin(t * 5)) * 4;
+        const x = p.x;
+        const y = p.y - bob;
+        canvas.drawOval({ x: x - 30, y: p.y - 6, width: 60, height: 14 }, hazePaint(0.3, '#000000'));
+        const green = hazePaint(1, '#27ae60');
+        const dark = hazePaint(1, '#1e8449');
+        const tail = Skia.PathBuilder.Make();
+        tail.addPoly([{ x: x - dir * 14, y: y - 30 }, { x: x - dir * (52 + Math.sin(t * 4) * 6), y: y - 12 }, { x: x - dir * 12, y: y - 18 }], true);
+        canvas.drawPath(tail.detach(), dark);
+        canvas.drawRect({ x: x - 12, y: y - 22, width: 7, height: 22 - Math.sin(t * 5) * 3 }, dark);
+        canvas.drawRect({ x: x + 4, y: y - 22, width: 7, height: 22 + Math.sin(t * 5) * 3 }, dark);
+        canvas.drawOval({ x: x - 22, y: y - 70, width: 44, height: 56 }, green);
+        canvas.drawOval({ x: x - 12, y: y - 58, width: 24, height: 36 }, hazePaint(1, '#a9dfbf'));
+        const spikes = Skia.PathBuilder.Make();
+        for (let k = 0; k < 4; k++) {
+          const sx = x - dir * (18 - k * 2);
+          const sy = y - 62 + k * 11;
+          spikes.addPoly([{ x: sx, y: sy }, { x: sx - dir * 10, y: sy + 3 }, { x: sx, y: sy + 8 }], true);
+        }
+        canvas.drawPath(spikes.detach(), hazePaint(1, '#f4d03f'));
+        const hx = x + dir * 14;
+        canvas.drawOval({ x: hx - 14, y: y - 92, width: 30, height: 24 }, green);
+        canvas.drawCircle(hx + dir * 4, y - 84, 3, hazePaint(1, '#ffffff'));
+        canvas.drawCircle(hx + dir * 5, y - 84, 1.6, hazePaint(1, '#c0392b'));
+        if (Math.sin(t * 2) > 0.3) {
+          // Rugissement.
+          for (let k = 0; k < 3; k++) canvas.drawCircle(hx + dir * (24 + k * 9), y - 76, 2 + k, hazePaint(0.6, '#ecf0f1'));
+        }
+      } else if (anim.kind === 'meteor' && elapsed >= 0 && elapsed < 2.4 && anim.path.length) {
+        const hit = anim.path[0];
+        if (elapsed < 1.2) {
+          // Chute : boule de feu et traînée.
+          const u = elapsed / 1.2;
+          const x = hit.x - 320 * (1 - u);
+          const y = hit.y - 520 * (1 - u);
+          for (let k = 0; k < 8; k++) canvas.drawCircle(x - k * 9, y - k * 14, 10 - k, hazePaint(0.5 - k * 0.05, k < 2 ? '#f9e79f' : '#e67e22'));
+          canvas.drawCircle(x, y, 9, hazePaint(1, '#fdebd0'));
+        } else {
+          // Impact : éclair blanc puis onde de choc.
+          const u = (elapsed - 1.2) / 1.2;
+          canvas.drawCircle(hit.x, hit.y, 20 + u * 110, hazePaint(0.6 * (1 - u), '#fdfefe'));
+          canvas.drawOval({ x: hit.x - 90 * u - 10, y: hit.y - 30 * u - 5, width: 180 * u + 20, height: 60 * u + 10 }, hazePaint(0.5 * (1 - u), '#e67e22'));
         }
       }
     }, { x: 0, y: 0, ...world });
-  }, [tornado]);
+  }, [anim, runways]);
   // Smog : nappes brunâtres qui dérivent lentement.
   const hazePic = useDerivedValue(() => {
     const t = clock.get() / 1000;
@@ -365,7 +459,15 @@ export function IsoMapCanvas() {
   // Carte vue dans le repère tourné (seules les tuiles modifiées sont recréées).
   const [rotated] = useState(() => new RotatedTiles());
   const viewTiles = useMemo(() => rotated.get(tiles, gridSize, rotation), [rotated, tiles, gridSize, rotation]);
-  const layers = useMapLayers(viewTiles, gridSize);
+  const layers = useMapLayers(viewTiles, gridSize, month);
+  /** Hauteur écran du sol d'une tuile (coordonnées d'origine). */
+  const zAt = useCallback(
+    (x: number, y: number) => {
+      const t = tiles[y * gridSize + x];
+      return t && t.type !== 'LAKE' ? t.elev * LEVEL_H : 0;
+    },
+    [tiles, gridSize],
+  );
 
   // Le trafic se recalcule une fois la construction terminée (pas à chaque tuile peinte),
   // en tâche de fond par tranches de quelques ms pour ne jamais bloquer les gestes.
@@ -394,7 +496,7 @@ export function IsoMapCanvas() {
     const base = built.scene;
     const full = crowds?.length ? { ...base, agents: [...base.agents, ...crowds] } : base;
     // Les incendies restent visibles même quand le trafic est désactivé.
-    return settings.showAgents ? full : { ...EMPTY_SCENE, fires: full.fires, metro: full.metro };
+    return settings.showAgents ? full : { ...EMPTY_SCENE, fires: full.fires, metro: full.metro, heights: full.heights };
   }, [settings.showAgents, built.scene, crowds]);
   usePerformanceGovernor(settings.quality);
 
@@ -440,6 +542,10 @@ export function IsoMapCanvas() {
           const h = cov ? localHappiness(tiles[i], i, maps, cov) : -1;
           return h < 0 ? null : 1 - h / 100;
         }
+        case 'water':
+          return maps.water[i] > 0.02 || t.type === 'LAKE' ? Math.min(1, maps.water[i] * 1.4) : null;
+        case 'health':
+          return built(t) && t.type === 'R' ? Math.min(1, maps.health[i] * 1.3) : null;
         case 'power':
           if (isPlant(t.type)) return 0;
           return built(t) || (isFacility(t.type) && t.type !== 'PARK' && t.type !== 'BUSSTOP') ? (tiles[i].powered ? 0.1 : 1) : null;
@@ -449,6 +555,27 @@ export function IsoMapCanvas() {
     }, { colorblind: settings.colorblind });
   }, [dataView, maps, viewTiles, gridSize, rotation, tiles, funding, settings.colorblind]);
 
+  // Toujours visibles : lacs pollués (eaux troubles) et voile violet du quartier en épidémie.
+  const healthKey = maps ? maps.health.some((v) => v > 0) : false;
+  const ambientPicture = useMemo(() => {
+    if (!maps) return null;
+    let any = healthKey;
+    for (let i = 0; i < maps.water.length && !any; i++) if (maps.water[i] > 0.2 && tiles[i].type === 'LAKE') any = true;
+    if (!any) return null;
+    const orig = (t: Tile) => {
+      const [x, y] = fromView(t.x, t.y, gridSize, rotation);
+      return y * gridSize + x;
+    };
+    return buildDataPicture(viewTiles, gridSize, () => null, {
+      alpha: 0.38,
+      colorOf: (t) => {
+        const i = orig(t);
+        if (t.type === 'LAKE') return maps.water[i] > 0.5 ? '#4d5a1e' : maps.water[i] > 0.2 ? '#7d8f4a' : null;
+        return maps.health[i] > 0 ? '#8e44ad' : null;
+      },
+    });
+  }, [maps, healthKey, viewTiles, tiles, gridSize, rotation]);
+
   // Éoliennes et grandes roues (animées) ; feux d'artifice au-dessus des événements.
   const spinners = useMemo(() => {
     const out: Spinner[] = [];
@@ -457,6 +584,7 @@ export function IsoMapCanvas() {
       const [vx, vy] = toView(t.x, t.y, gridSize, rotation);
       const p = gridToWorld(vx, vy, origin);
       const occ = buildOccluderPicture(viewTiles, gridSize, vx, vy);
+      p.y -= t.elev * LEVEL_H;
       if (t.type === 'WIND') out.push({ kind: 'wind', x: p.x, y: p.y + HALF_H - 51, seed: t.x * 1.3 + t.y, occ });
       else {
         // Moyeu entre les deux pieds de la roue (décalés de -0.32 en y d'origine).
@@ -473,9 +601,9 @@ export function IsoMapCanvas() {
         .map((e) => {
           const [vx, vy] = toView(e.x, e.y, gridSize, rotation);
           const p = gridToWorld(vx, vy, origin);
-          return { x: p.x, y: p.y + HALF_H, big: e.kind === 'fireworks' };
+          return { x: p.x, y: p.y + HALF_H - zAt(e.x, e.y), big: e.kind === 'fireworks' };
         }),
-    [cityEvents, gridSize, rotation, origin],
+    [cityEvents, gridSize, rotation, origin, zAt],
   );
 
   // Aperçu du glisser : rectangle de zonage ou route droite.
@@ -492,7 +620,7 @@ export function IsoMapCanvas() {
               ? !isZone(t.type) && !isFacility(t.type) && t.rad === 0
               : (isBuildableGround(t.type) || t.type === 'FOREST') && t.rad === 0;
         const [vx, vy] = toView(x, y, gridSize, rotation);
-        return { x: vx, y: vy, ok: ok || (drag.mode === 'line' && isRoadType(t.type)) };
+        return { x: vx, y: vy, ok: ok || (drag.mode === 'line' && isRoadType(t.type)), z: t.type === 'LAKE' ? 0 : t.elev * LEVEL_H };
       });
     return buildPreviewPicture(gridSize, cells, TOOL_BY_ID[tool].color);
   }, [drag, tiles, gridSize, rotation, tool]);
@@ -507,18 +635,19 @@ export function IsoMapCanvas() {
         if (v < 22) continue;
         const [vx, vy] = toView(x, y, gridSize, rotation);
         const p = gridToWorld(vx, vy, origin);
-        out.push({ x: p.x, y: p.y + HALF_H, v: Math.min(1, (v - 22) / 40) });
+        out.push({ x: p.x, y: p.y + HALF_H - zAt(x, y), v: Math.min(1, (v - 22) / 40) });
         if (out.length >= 140) return out;
       }
     }
     return out;
-  }, [maps, gridSize, rotation, origin]);
+  }, [maps, gridSize, rotation, origin, zAt]);
 
   const highlight = useMemo(() => {
     if (!selected) return null;
     const [vx, vy] = toView(selected.x, selected.y, gridSize, rotation);
-    return diamondPath(vx, vy, origin);
-  }, [selected, gridSize, rotation, origin]);
+    const t = tiles[selected.y * gridSize + selected.x];
+    return diamondPath(vx, vy, origin, t && t.type !== 'LAKE' ? t.elev * LEVEL_H : 0);
+  }, [selected, gridSize, rotation, origin, tiles]);
 
   // Caméra : écran = monde * scale + (tx, ty).
   // Horloges : `realClock` (météo) tourne toujours ; `clock` (PNJ, effets) s'arrête en pause
@@ -608,25 +737,51 @@ export function IsoMapCanvas() {
   }, [rotation, gridSize, origin, screenW, screenH, scale, tx, ty]);
 
   // Catastrophes : secousse de la caméra (séisme), tornade animée sur son trajet.
-  const tornadoStart = useSharedValue(-100);
-  const tornado = useMemo(() => {
+  const animStart = useSharedValue(-100);
+  const anim = useMemo((): DisasterAnim | null => {
     const ev = lastDisaster?.event;
-    if (!ev || ev.kind !== 'tornado' || !ev.path) return null;
-    const path = ev.path.map(([x, y]) => {
-      const [vx, vy] = toView(Math.max(0, Math.min(gridSize - 1, x)), Math.max(0, Math.min(gridSize - 1, y)), gridSize, rotation);
+    if (!ev || (ev.kind !== 'tornado' && ev.kind !== 'monster' && ev.kind !== 'meteor')) return null;
+    const pts: [number, number][] = ev.path ?? [[ev.x, ev.y]];
+    const path = pts.map(([x, y]) => {
+      const cx = Math.max(0, Math.min(gridSize - 1, x));
+      const cy = Math.max(0, Math.min(gridSize - 1, y));
+      const [vx, vy] = toView(cx, cy, gridSize, rotation);
       const p = gridToWorld(vx, vy, origin);
-      return { x: p.x, y: p.y + HALF_H };
+      return { x: p.x, y: p.y + HALF_H - zAt(cx, cy) };
     });
-    return { path, start: tornadoStart };
-  }, [lastDisaster, gridSize, rotation, origin, tornadoStart]);
+    return { kind: ev.kind, path, start: animStart };
+  }, [lastDisaster, gridSize, rotation, origin, animStart, zAt]);
   useEffect(() => {
     if (!lastDisaster || Date.now() - lastDisaster.at > 3000) return;
     const ev = lastDisaster.event;
-    if (ev.kind === 'earthquake') {
-      shake.set(withSequence(...Array.from({ length: 12 }, (_, k) => withTiming(k % 2 ? -9 : 9, { duration: 70 })), withTiming(0, { duration: 80 })));
+    const quake = (amp: number) => shake.set(withSequence(...Array.from({ length: 12 }, (_, k) => withTiming(k % 2 ? -amp : amp, { duration: 70 })), withTiming(0, { duration: 80 })));
+    if (ev.kind === 'earthquake') quake(9);
+    if (ev.kind === 'tornado' || ev.kind === 'monster' || ev.kind === 'meteor') animStart.set(clock.get() / 1000);
+    if (ev.kind === 'monster') quake(4);
+    if (ev.kind === 'meteor') {
+      // La secousse arrive avec l'impact.
+      const id = setTimeout(() => quake(12), 1200);
+      return () => clearTimeout(id);
     }
-    if (ev.kind === 'tornado') tornadoStart.set(clock.get() / 1000);
-  }, [lastDisaster, shake, clock, tornadoStart]);
+  }, [lastDisaster, shake, clock, animStart]);
+
+  // Pistes d'aéroport : les avions décollent le long de l'axe x de la grille.
+  const runways = useMemo(() => {
+    const out: Runway[] = [];
+    for (const t of tiles) {
+      if (t.type !== 'AIRPORT' || !t.powered) continue;
+      const [vx, vy] = pointToView(t.x + 0.1, t.y + 0.5, gridSize, rotation);
+      const [dx, dy] = vectorToView(1, 0, rotation);
+      out.push({
+        x: origin.originX + (vx - vy) * HALF_W,
+        y: origin.originY + (vx + vy) * HALF_H - t.elev * LEVEL_H,
+        dx: (dx - dy) * HALF_W,
+        dy: (dx + dy) * HALF_H,
+        seed: t.x * 3.1 + t.y,
+      });
+    }
+    return out;
+  }, [tiles, gridSize, rotation, origin]);
 
   // Calques de la carte : seuls les blocs visibles sont rejoués.
   const groundLists = useMemo(() => [layers.ground, layers.shadows], [layers]);
@@ -637,6 +792,32 @@ export function IsoMapCanvas() {
   const night = useDerivedValue(() => (settings.dayNight ? nightAmount(dayClock.get()) : 0));
   const lightsPic = useVisiblePicture(lightLists, layers.bounds, camera, world, night);
   const nightOverlay = useDerivedValue(() => night.get() * 0.62);
+
+  // Ambiance sonore : pluie, foule des événements, nuit, oiseaux à la campagne, rumeur de la ville.
+  const [isNight, setIsNight] = useState(false);
+  useAnimatedReaction(
+    () => night.get() > 0.5,
+    (v, prev) => {
+      if (v !== prev) scheduleOnRN(setIsNight, v);
+    },
+  );
+  const crowd = cityEvents.some((e) => e.kind !== 'market');
+  const ambience: Ambience | null = paused
+    ? null
+    : weather === 'rain' || weather === 'storm'
+      ? 'rain'
+      : crowd
+        ? 'crowd'
+        : isNight
+          ? 'night'
+          : weather === 'snow' || weather === 'fog'
+            ? 'wind'
+            : population < 400 && seasonOf(month) !== 'winter'
+              ? 'birds'
+              : 'city';
+  useEffect(() => {
+    setAmbience(ambience);
+  }, [ambience]);
   // Saisons : neige l'hiver, teinte rousse l'automne, herbe dorée l'été (transitions douces).
   const season = seasonOf(month);
   const snow = useSharedValue(season === 'winter' ? 1 : 0);
@@ -701,13 +882,37 @@ export function IsoMapCanvas() {
     scale.set(next);
   });
 
-  /** Raycasting inverse : écran -> tuile vue -> tuile d'origine (rotation). */
-  const pick = (x: number, y: number) => {
+  /** Écran -> monde (worklet) ; la tuile est ensuite trouvée côté JS, relief compris. */
+  const toWorld = (x: number, y: number) => {
     'worklet';
-    const t = screenToTile(x, y, tx.get(), ty.get(), scale.get(), gridSize);
-    if (!t) return null;
-    const [ox, oy] = fromView(t.x, t.y, gridSize, rotation);
-    return { x: ox, y: oy };
+    const s = scale.get();
+    return { x: (x - tx.get()) / s, y: (y - ty.get()) / s };
+  };
+  /**
+   * Raycasting inverse avec le relief : on essaie d'abord les sommets (une tuile
+   * haute masque celles de derrière), puis les niveaux inférieurs.
+   */
+  const pickWorld = (wx: number, wy: number): { x: number; y: number } | null => {
+    let fallback: { x: number; y: number } | null = null;
+    for (let e = MAX_ELEV; e >= 0; e--) {
+      const g = worldToGridFloat(wx, wy + e * LEVEL_H, origin);
+      const vx = Math.floor(g.x);
+      const vy = Math.floor(g.y);
+      if (vx < 0 || vy < 0 || vx >= gridSize || vy >= gridSize) continue;
+      const t = viewTiles[vy * gridSize + vx];
+      const [ox, oy] = fromView(vx, vy, gridSize, rotation);
+      if ((t.type === 'LAKE' ? 0 : t.elev) === e) return { x: ox, y: oy };
+      if (e === 0) fallback = { x: ox, y: oy };
+    }
+    return fallback;
+  };
+  const paintStartAt = (wx: number, wy: number) => {
+    const t = pickWorld(wx, wy);
+    if (t) paintStart(t.x, t.y);
+  };
+  const paintMoveAt = (wx: number, wy: number) => {
+    const t = pickWorld(wx, wy);
+    if (t) paintMove(t.x, t.y);
   };
 
   // Peinture au doigt (routes, zones, bulldozer) : 1 doigt, seulement en mode construction.
@@ -718,39 +923,39 @@ export function IsoMapCanvas() {
     .onStart((e) => {
       // Le geste s'active après quelques pixels : on part du point de contact initial
       // pour ne pas sauter la première tuile, puis on rejoint la position courante.
-      const s = pick(e.x - e.translationX, e.y - e.translationY);
-      if (s) scheduleOnRN(paintStart, s.x, s.y);
-      const t = pick(e.x, e.y);
-      if (t) scheduleOnRN(paintMove, t.x, t.y);
+      const s = toWorld(e.x - e.translationX, e.y - e.translationY);
+      scheduleOnRN(paintStartAt, s.x, s.y);
+      const t = toWorld(e.x, e.y);
+      scheduleOnRN(paintMoveAt, t.x, t.y);
     })
     .onUpdate((e) => {
-      const t = pick(e.x, e.y);
-      if (t) scheduleOnRN(paintMove, t.x, t.y);
+      const t = toWorld(e.x, e.y);
+      scheduleOnRN(paintMoveAt, t.x, t.y);
     })
     .onFinalize(() => {
       scheduleOnRN(paintEnd);
     });
 
   // Toucher simple : d'abord un citoyen (en mode Explorer), sinon la tuile.
-  const onTap = (tileX: number, tileY: number, gx: number, gy: number, timeMs: number) => {
+  const onTap = (wx: number, wy: number, timeMs: number) => {
     if (tool === 'inspect' && settings.showAgents) {
+      const g = worldToGridFloat(wx, wy, origin);
+      const [gx, gy] = pointFromView(g.x, g.y, gridSize, rotation);
       const hit = agentAt(scene, timeMs, gx, gy);
       if (hit >= 0) {
         showCitizen(describeAgent(scene, hit, agentTiles, gridSize, happiness));
         return;
       }
     }
-    if (tileX >= 0) tapTile(tileX, tileY);
+    const t = pickWorld(wx, wy);
+    if (t) tapTile(t.x, t.y);
   };
   const tap = Gesture.Tap()
     .maxDuration(300)
     .onEnd((e, success) => {
       if (!success) return;
-      const t = pick(e.x, e.y);
-      const s = scale.get();
-      const g = worldToGridFloat((e.x - tx.get()) / s, (e.y - ty.get()) / s, origin);
-      const [gx, gy] = pointFromView(g.x, g.y, gridSize, rotation);
-      scheduleOnRN(onTap, t ? t.x : -1, t ? t.y : -1, gx, gy, clock.get());
+      const w = toWorld(e.x, e.y);
+      scheduleOnRN(onTap, w.x, w.y, clock.get());
     });
 
   const gesture = Gesture.Race(Gesture.Simultaneous(pan, pinch), paint, tap);
@@ -769,10 +974,11 @@ export function IsoMapCanvas() {
             <Rect x={-200} y={-400} width={world.width + 400} height={world.height + 800} color="#d35400" opacity={autumnTint} blendMode="srcATop" />
             <Rect x={-200} y={-400} width={world.width + 400} height={world.height + 800} color="#f4d03f" opacity={summerTint} blendMode="srcATop" />
             <Picture picture={snowPic} />
+            {ambientPicture && <Picture picture={ambientPicture} />}
             <Rect x={-200} y={-400} width={world.width + 400} height={world.height + 800} color={NIGHT_TINT} opacity={nightOverlay} />
           </Group>
         </Canvas>
-        {scene.agents.length > 0 && (
+        {(scene.agents.length > 0 || !!scene.lines?.length) && (
           <Canvas style={styles.layer} pointerEvents="none">
             <Group transform={transform}>
               <AgentsLayer scene={scene} gridSize={gridSize} camera={camera} clock={clock} night={night} rotation={rotation} />
@@ -799,7 +1005,7 @@ export function IsoMapCanvas() {
         </Canvas>
         <Canvas style={styles.layer} pointerEvents="none">
           <Group transform={transform}>
-            <EffectsLayer haze={haze} tornado={tornado} clock={clock} gridSize={gridSize} spinners={spinners} bursts={bursts} night={night} />
+            <EffectsLayer haze={haze} anim={anim} clock={clock} gridSize={gridSize} spinners={spinners} bursts={bursts} night={night} runways={runways} />
             <AgentsLayer
               scene={scene}
               gridSize={gridSize}

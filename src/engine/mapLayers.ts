@@ -1,5 +1,5 @@
 import type { SkPicture } from '@shopify/react-native-skia';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 import type { Tile } from './map';
 import {
@@ -9,6 +9,8 @@ import {
   buildLightsPicture,
   buildShadowPicture,
   mapBlocks,
+  renderSeason,
+  setRenderSeason,
   type Block,
 } from './renderer';
 
@@ -23,7 +25,10 @@ export type MapLayers = {
   lights: SkPicture[];
 };
 
-type Cache = { tiles: Tile[]; size: number; blocks: Block[]; layers: MapLayers };
+type Cache = { tiles: Tile[]; size: number; blocks: Block[]; layers: MapLayers; looks: string[] };
+
+/** Blocs reconstruits par passe quand la saison change (le reste suit au passage suivant). */
+const SEASON_BLOCKS_PER_PASS = 12;
 
 /** Ce qui a un rendu : type, densité, réseaux, incendie, eau, ordures visibles, inondation. */
 const visuallyEqual = (a: Tile, b: Tile) =>
@@ -36,6 +41,9 @@ const visuallyEqual = (a: Tile, b: Tile) =>
     a.lake === b.lake &&
     (a.flood > 0) === (b.flood > 0) &&
     a.rad === b.rad &&
+    a.elev === b.elev &&
+    a.line === b.line &&
+    a.spec === b.spec &&
     (a.garbage >= 5) === (b.garbage >= 5) &&
     (a.type !== 'LANDFILL' || a.garbage === b.garbage));
 
@@ -56,16 +64,24 @@ function buildAll(tiles: Tile[], size: number, blocks: Block[]): MapLayers {
  */
 class LayerCache {
   private last: Cache | null = null;
+  /** Blocs encore dessinés avec l'ancienne saison. */
+  pending = 0;
 
   update(tiles: Tile[], size: number): MapLayers {
+    const look = renderSeason();
     const prev = this.last;
     if (!prev || prev.size !== size) {
       const blocks = mapBlocks(size);
       const layers = buildAll(tiles, size, blocks);
-      this.last = { tiles, size, blocks, layers };
+      this.last = { tiles, size, blocks, layers, looks: blocks.map(() => look) };
+      this.pending = 0;
       return layers;
     }
-    if (prev.tiles === tiles) return prev.layers;
+    const stale = prev.looks.reduce((n, l) => n + (l === look ? 0 : 1), 0);
+    if (prev.tiles === tiles && !stale) {
+      this.pending = 0;
+      return prev.layers;
+    }
 
     const changed = new Uint8Array(size * size);
     let any = false;
@@ -75,7 +91,7 @@ class LayerCache {
         any = true;
       }
     }
-    if (!any) {
+    if (!any && !stale) {
       this.last = { ...prev, tiles };
       return prev.layers;
     }
@@ -88,7 +104,19 @@ class LayerCache {
       buildings: L.buildings.slice(),
       lights: L.lights.slice(),
     };
+    const looks = prev.looks.slice();
+    let budget = SEASON_BLOCKS_PER_PASS;
     prev.blocks.forEach((b, k) => {
+      // Nouvelle saison : quelques blocs par passe, pour ne pas figer l'écran.
+      if (looks[k] !== look && budget > 0) {
+        budget--;
+        looks[k] = look;
+        next.ground[k] = buildGroundPicture(tiles, size, b);
+        next.shadows[k] = buildShadowPicture(tiles, size, b);
+        next.buildings[k] = buildBuildingPicture(tiles, size, b);
+        next.lights[k] = buildLightsPicture(tiles, size, b);
+        return;
+      }
       let inner = false;
       let border = false;
       for (let y = Math.max(0, b.y0 - 1); y <= Math.min(size - 1, b.y1 + 1); y++) {
@@ -99,18 +127,38 @@ class LayerCache {
         }
       }
       if (inner || border) next.ground[k] = buildGroundPicture(tiles, size, b);
-      if (inner) {
+      // Les voisines comptent aussi pour les bâtiments (relief : sol redessiné devant un immeuble).
+      if (inner || border) {
         next.shadows[k] = buildShadowPicture(tiles, size, b);
         next.buildings[k] = buildBuildingPicture(tiles, size, b);
         next.lights[k] = buildLightsPicture(tiles, size, b);
       }
     });
-    this.last = { tiles, size, blocks: prev.blocks, layers: next };
+    this.pending = looks.reduce((n, l) => n + (l === look ? 0 : 1), 0);
+    this.last = { tiles, size, blocks: prev.blocks, layers: next, looks };
     return next;
   }
 }
 
-export function useMapLayers(tiles: Tile[], size: number): MapLayers {
+/**
+ * Calques de la carte. `month` règle l'apparence saisonnière (arbres, fleurs,
+ * Noël) ; au changement de saison, les blocs sont redessinés par petits lots.
+ */
+export function useMapLayers(tiles: Tile[], size: number, month = 3): MapLayers {
   const [cache] = useState(() => new LayerCache());
-  return useMemo(() => cache.update(tiles, size), [cache, tiles, size]);
+  const [pass, setPass] = useState(0);
+  setRenderSeason(month);
+  const look = renderSeason();
+  const layers = useMemo(() => {
+    void pass;
+    void look;
+    return cache.update(tiles, size);
+  }, [cache, tiles, size, look, pass]);
+  const pending = cache.pending;
+  useEffect(() => {
+    if (!pending) return;
+    const id = setTimeout(() => setPass((p) => p + 1), 60);
+    return () => clearTimeout(id);
+  }, [pending, layers]);
+  return layers;
 }

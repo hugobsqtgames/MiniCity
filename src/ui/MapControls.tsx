@@ -21,6 +21,8 @@ const LEGENDS: Record<Exclude<DataView, 'none'>, [string, string]> = {
   garbage: ['propre', 'ordures'],
   happiness: ['heureux', 'mécontents'],
   power: ['alimenté', 'sans courant'],
+  water: ['eau claire', 'eau polluée'],
+  health: ['en bonne santé', 'épidémie'],
   districts: ['', ''],
 };
 

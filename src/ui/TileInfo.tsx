@@ -3,10 +3,10 @@ import { Pressable, StyleSheet, View } from 'react-native';
 import Animated, { FadeInDown, FadeOutDown } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { isLogistics, isMonument, isPlant, isRoadType, isVenue, isZone, tileIndex, type TileType } from '../engine/map';
-import { JOBS_C, JOBS_I, LOGISTICS_CAPACITY, MONUMENT_TOURISM, MONUMENT_UNLOCK, PLANT_OUTPUT, RESIDENTS, ROAD_CAPACITY, UPKEEP, VENUE_TOURISM } from '../sim/constants';
+import { isLogistics, isMonument, isPlant, isRoadType, isTunnel, isVenue, isZone, LINE_RAIL, LINE_TRAM, SPEC_NAMES, tileIndex, type TileType } from '../engine/map';
+import { JOBS_C, JOBS_I, LOGISTICS_CAPACITY, MONUMENT_TOURISM, MONUMENT_UNLOCK, RESIDENTS, ROAD_CAPACITY, UPKEEP, VENUE_TOURISM } from '../sim/constants';
 import { districtAt } from '../sim/districts';
-import { plantFactor, powerUse } from '../sim/power';
+import { plantOutput, powerUse } from '../sim/power';
 import { computeCoverage, computeRoadAccess, EVENT_COST, EVENT_LABELS, type CityEventKind } from '../sim/simulation';
 import { useGameStore } from '../store/useGameStore';
 import { Text } from './Text';
@@ -50,6 +50,13 @@ const NAMES: Record<TileType, string> = {
   UNIVERSITY: 'Université',
   AIRPORT: 'Aéroport',
   LANDMARK: 'Tour emblématique',
+  HIGHSCHOOL: 'Lycée',
+  PARKING: 'Parking',
+  TREATMENT: 'Station d’épuration',
+  STATION: 'Gare de voyageurs',
+  RAIL: 'Voie ferrée',
+  HOTEL: 'Hôtel',
+  RESORT: 'Plage aménagée',
 };
 const LEVELS = ['Parcelle vide', 'Niveau 1', 'Niveau 2', 'Niveau 3'];
 const SERVICE_TEXT: Partial<Record<TileType, string>> = {
@@ -64,6 +71,15 @@ const SERVICE_TEXT: Partial<Record<TileType, string>> = {
   INCINERATOR: 'Brûle les déchets sans limite, mais pollue',
   RECYCLING: 'Réduit les déchets de 30 % sans polluer',
   BUSSTOP: 'Les bus y passent : − voitures, + mobilité (rayon 5)',
+  HIGHSCHOOL: 'Lycée : 35 % du niveau d’études (rayon 14) — bureaux et industrie de pointe',
+  PARKING: 'Indispensable aux tours de bureaux au-delà de 2 500 habitants (rayon 4)',
+  TREATMENT: 'Épure les eaux usées : lacs propres, moins d’épidémies (rayon 14)',
+  STATION: 'Train de voyageurs : au moins 2 gares reliées par la voie ferrée (rayon 8)',
+};
+const TOURISM_TEXT: Partial<Record<TileType, string>> = {
+  HOTEL: '400 chambres : les touristes restent dormir et dépensent deux fois plus',
+  RESORT: 'Plage aménagée : 150 visiteurs par mois (moins si l’eau est polluée)',
+  RAIL: 'Voie ferrée : reliez deux gares ; posée sur une rue, elle forme un passage à niveau',
 };
 const MONUMENT_TEXT: Partial<Record<TileType, string>> = {
   STADIUM: 'Matchs le week-end : + satisfaction, + tourisme',
@@ -111,7 +127,11 @@ export function TileInfo() {
     const idx = tileIndex(selected.x, selected.y, size);
     const t = tiles[idx];
     const lines: string[] = [];
-    lines.push(`🏘️ Quartier : ${districtAt(size, t.x, t.y).name}`);
+    lines.push(`🏘️ Quartier : ${districtAt(size, t.x, t.y).name}${t.elev > 0 && t.type !== 'LAKE' ? ` · ⛰️ altitude ${t.elev}` : ''}`);
+    if (isTunnel(t)) lines.push('🚇 Tunnel sous la montagne');
+    if (t.line & LINE_TRAM) lines.push('🚋 Ligne de tramway');
+    if (t.line & LINE_RAIL) lines.push('🚦 Passage à niveau');
+    if (TOURISM_TEXT[t.type]) lines.push(TOURISM_TEXT[t.type]!);
     if (t.fire > 0) lines.push(`🔥 EN FEU depuis ${t.fire} mois !`);
     if (t.flood > 0) lines.push(`🌊 Hors service encore ${t.flood} mois`);
     if (t.rad > 0) lines.push(`☢️ Contaminé (niveau ${t.rad}/9) : inhabitable, baisse d’un cran par an`);
@@ -124,12 +144,17 @@ export function TileInfo() {
       lines.push(road ? '🛣️ Accès routier' : '⚠️ Pas de route à moins de 3 cases');
       if (t.type === 'R') lines.push(`👨‍👩‍👧‍👦 ${formatNumber(RESIDENTS[t.density])} habitants`);
       if (t.type === 'C') lines.push(`💼 ${formatNumber(JOBS_C[t.density])} emplois`);
-      if (t.type === 'I') lines.push(`🏭 ${formatNumber(JOBS_I[t.density])} emplois`);
+      if (t.type === 'I') lines.push(`${['🏭', '🌾', '🪵', '💾'][t.spec] ?? '🏭'} ${formatNumber(JOBS_I[t.density])} emplois · ${SPEC_NAMES[t.spec] ?? SPEC_NAMES[0]}`);
       const services = [
         cov.POLICE[idx] > 0 && '🚓',
         cov.FIRE[idx] > 0 && '🚒',
         cov.HOSPITAL[idx] > 0 && '🏥',
         cov.SCHOOL[idx] > 0 && '🏫',
+        cov.HIGHSCHOOL[idx] > 0 && '🎒',
+        cov.TRAM[idx] > 0 && '🚋',
+        cov.STATION[idx] > 0 && '🚉',
+        cov.PARKING[idx] > 0 && '🅿️',
+        cov.TREATMENT[idx] > 0 && '🫧',
         cov.METRO[idx] > 0 && '🚇',
         cov.BUSSTOP[idx] > 0 && '🚏',
         (cov.LANDFILL[idx] > 0 || cov.INCINERATOR[idx] > 0) && '🗑️',
@@ -144,7 +169,7 @@ export function TileInfo() {
       if (t.garbage >= 5) lines.push('🗑️ Les ordures s’entassent : il faut une décharge');
       if (!t.water && t.density >= 1) lines.push('💡 Il faut de l’eau pour dépasser le niveau 1');
     } else if (isPlant(t.type)) {
-      const mw = Math.round(PLANT_OUTPUT[t.type] * plantFactor(t.type, month));
+      const mw = Math.round(plantOutput({ ...t, flood: 0 }, month));
       lines.push(PLANT_TEXT[t.type]!);
       lines.push(t.flood > 0 ? '⚠️ En panne' : `⚡ Produit ${formatNumber(mw)} MW ce mois-ci (portée 15 cases)`);
       lines.push(`Entretien ${formatMoney(UPKEEP[t.type] ?? 0)}/mois`);

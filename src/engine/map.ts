@@ -12,7 +12,11 @@ export type ServiceType =
   | 'LANDFILL'
   | 'INCINERATOR'
   | 'RECYCLING'
-  | 'BUSSTOP';
+  | 'BUSSTOP'
+  | 'HIGHSCHOOL'
+  | 'PARKING'
+  | 'TREATMENT'
+  | 'STATION';
 
 /** Monuments débloqués par paliers de population (un seul exemplaire chacun). */
 export type MonumentType = 'UNIVERSITY' | 'AIRPORT' | 'LANDMARK';
@@ -26,13 +30,16 @@ export type PlantType = 'POWER' | 'WIND' | 'SOLAR' | 'NUCLEAR';
 /** Logistique : port (au bord de l'eau) et gare de fret, pour exporter la production industrielle. */
 export type LogisticsType = 'PORT' | 'FREIGHT';
 
+/** Tourisme : hôtel, plage aménagée. */
+export type TourismType = 'HOTEL' | 'RESORT';
+
 /** Routes : rue (2 voies), avenue (4 voies), autoroute (rapide, sans accès aux zones). */
 export type RoadType = 'ROAD' | 'AVENUE' | 'HIGHWAY';
 
 /** Terrain naturel. */
 export type TerrainType = 'GRASS' | 'DIRT' | 'LAKE' | 'SAND' | 'FOREST';
 
-export type TileType = TerrainType | RoadType | ZoneType | PlantType | ServiceType | MonumentType | VenueType | LogisticsType;
+export type TileType = TerrainType | RoadType | ZoneType | PlantType | ServiceType | MonumentType | VenueType | LogisticsType | TourismType | 'RAIL';
 
 export type Tile = {
   x: number;
@@ -54,7 +61,21 @@ export type Tile = {
   flood: number;
   /** Contamination radioactive (0-9, baisse d'un cran par an) après un accident nucléaire. */
   rad: number;
+  /** Altitude (0 = plaine, jusqu'à MAX_ELEV) : collines et montagnes. */
+  elev: number;
+  /** Lignes posées sur une route : bit 1 = tramway (avenue), bit 2 = passage à niveau (voie ferrée). */
+  line: number;
+  /** Spécialisation d'une zone industrielle : 0 classique, 1 agriculture, 2 bois, 3 haute technologie. */
+  spec: number;
+  /** Coordonnées d'origine (seulement sur les copies tournées pour l'affichage). */
+  ox?: number;
+  oy?: number;
 };
+
+export const MAX_ELEV = 3;
+export const LINE_TRAM = 1;
+export const LINE_RAIL = 2;
+export const SPEC_NAMES = ['Industrie classique', 'Agriculture', 'Filière bois', 'Haute technologie'];
 
 export const SERVICE_TYPES: ServiceType[] = [
   'POLICE',
@@ -68,11 +89,16 @@ export const SERVICE_TYPES: ServiceType[] = [
   'INCINERATOR',
   'RECYCLING',
   'BUSSTOP',
+  'HIGHSCHOOL',
+  'PARKING',
+  'TREATMENT',
+  'STATION',
 ];
 export const MONUMENT_TYPES: MonumentType[] = ['UNIVERSITY', 'AIRPORT', 'LANDMARK'];
 export const VENUE_TYPES: VenueType[] = ['STADIUM', 'ARENA', 'FAIR', 'MARKET'];
 export const PLANT_TYPES: PlantType[] = ['POWER', 'WIND', 'SOLAR', 'NUCLEAR'];
 export const LOGISTICS_TYPES: LogisticsType[] = ['PORT', 'FREIGHT'];
+export const TOURISM_TYPES: TourismType[] = ['HOTEL', 'RESORT'];
 export const ROAD_TYPES: RoadType[] = ['ROAD', 'AVENUE', 'HIGHWAY'];
 
 export const isZone = (t: TileType): t is ZoneType => t === 'R' || t === 'C' || t === 'I';
@@ -81,18 +107,23 @@ export const isMonument = (t: TileType): t is MonumentType => (MONUMENT_TYPES as
 export const isVenue = (t: TileType): t is VenueType => (VENUE_TYPES as TileType[]).includes(t);
 export const isPlant = (t: TileType): t is PlantType => (PLANT_TYPES as TileType[]).includes(t);
 export const isLogistics = (t: TileType): t is LogisticsType => t === 'PORT' || t === 'FREIGHT';
+export const isTourism = (t: TileType): t is TourismType => t === 'HOTEL' || t === 'RESORT';
+/** Tuile sur laquelle roulent les trains : voie, gare, ou route avec passage à niveau. */
+export const isRail = (t: Tile) => t.type === 'RAIL' || t.type === 'STATION' || (isRoadType(t.type) && (t.line & LINE_RAIL) !== 0);
+/** Route en tunnel : une route creusée dans une montagne (altitude ≥ 2). */
+export const isTunnel = (t: Tile) => isRoadType(t.type) && t.elev >= 2;
 export const isRoadType = (t: TileType): t is RoadType => t === 'ROAD' || t === 'AVENUE' || t === 'HIGHWAY';
 /** Routes qui desservent les zones (l'autoroute n'a pas d'accès riverain). */
 export const servesZones = (t: TileType) => t === 'ROAD' || t === 'AVENUE';
 /** Terrain constructible sans bulldozer. */
 export const isBuildableGround = (t: TileType) => t === 'GRASS' || t === 'DIRT' || t === 'SAND';
 /** Bâtiment public ou industriel posé par le joueur (hors zones et routes). */
-export const isFacility = (t: TileType) => isService(t) || isMonument(t) || isVenue(t) || isPlant(t) || isLogistics(t);
+export const isFacility = (t: TileType) => isService(t) || isMonument(t) || isVenue(t) || isPlant(t) || isLogistics(t) || isTourism(t);
 /** Tuile bâtie (zones construites, services, monuments, lieux, centrales, logistique). */
 export const isBuilding = (t: Tile) => (isZone(t.type) && t.density > 0) || isFacility(t.type);
 
 export function blankTile(x: number, y: number): Tile {
-  return { x, y, type: 'GRASS', density: 0, powered: false, water: false, value: 0, fire: 0, lake: false, garbage: 0, flood: 0, rad: 0 };
+  return { x, y, type: 'GRASS', density: 0, powered: false, water: false, value: 0, fire: 0, lake: false, garbage: 0, flood: 0, rad: 0, elev: 0, line: 0, spec: 0 };
 }
 
 export function createEmptyMap(size: number): Tile[] {

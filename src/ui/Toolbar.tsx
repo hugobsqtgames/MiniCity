@@ -4,7 +4,7 @@ import Animated, { useAnimatedStyle, useSharedValue, withSpring } from 'react-na
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { isMonument, isVenue } from '../engine/map';
-import { MONUMENT_UNLOCK, NUCLEAR_UNLOCK, TOOLS, VENUE_UNLOCK, type ToolDef, type ToolGroup } from '../sim/constants';
+import { MONUMENT_UNLOCK, NUCLEAR_UNLOCK, TOOLS, UNLOCK, VENUE_UNLOCK, type ToolDef, type ToolGroup } from '../sim/constants';
 import { useGameStore } from '../store/useGameStore';
 import { Text } from './Text';
 import { formatMoney, formatNumber, theme } from './theme';
@@ -67,7 +67,7 @@ export function Toolbar() {
     if (!t.places) return 0;
     if (isMonument(t.places)) return MONUMENT_UNLOCK[t.places];
     if (isVenue(t.places)) return VENUE_UNLOCK[t.places];
-    return t.places === 'NUCLEAR' ? NUCLEAR_UNLOCK : 0;
+    return t.places === 'NUCLEAR' ? NUCLEAR_UNLOCK : (UNLOCK[t.places] ?? 0);
   };
   const lockOf = (t: ToolDef): string | null => {
     if (!t.places) return null;

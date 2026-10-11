@@ -1,5 +1,5 @@
-import { isBuildableGround, isMonument, isRoadType, isVenue, type Tile } from '../engine/map';
-import { MONUMENT_UNLOCK, NUCLEAR_UNLOCK, TOOL_BY_ID, VENUE_UNLOCK, type ToolId } from './constants';
+import { isBuildableGround, isBuilding, isMonument, isRoadType, isVenue, LINE_RAIL, LINE_TRAM, MAX_ELEV, type Tile } from '../engine/map';
+import { MONUMENT_UNLOCK, NUCLEAR_UNLOCK, TERRAFORM_COST, TOOL_BY_ID, TRAM_COST, TUNNEL_FACTOR, UNLOCK, VENUE_UNLOCK, type ToolId } from './constants';
 import { applyPower } from './power';
 
 export type ToolResult = { ok: true; tiles: Tile[]; cost: number } | { ok: false; reason: string };
@@ -24,6 +24,8 @@ const reset = (tile: Tile, type: Tile['type'], lake = false): Tile => ({
   garbage: 0,
   flood: 0,
   lake,
+  line: 0,
+  spec: 0,
 });
 
 function nextToLake(tiles: Tile[], size: number, x: number, y: number): boolean {
@@ -45,7 +47,11 @@ export function toolCost(tiles: Tile[], size: number, tool: ToolId, x: number, y
   const def = TOOL_BY_ID[tool];
   const tile = tiles[y * size + x];
   let cost = def.cost;
+  if (tool === 'raise' || tool === 'lower') return TERRAFORM_COST;
+  if (tool === 'tram') return TRAM_COST;
   if (def.places && isRoadType(def.places) && (tile.type === 'LAKE' || tile.lake)) cost *= BRIDGE_FACTOR;
+  // Tunnel : une route creusée dans une montagne coûte bien plus cher.
+  if (def.places && (isRoadType(def.places) || def.places === 'RAIL') && tile.elev >= 2) cost *= TUNNEL_FACTOR;
   if (tile.type === 'FOREST' && tool !== 'bulldoze') cost += CLEAR_FOREST_COST;
   if (tool === 'water' && nextToLake(tiles, size, x, y)) cost = Math.round(cost / 2);
   if (tool === 'bulldoze' && tile.type === 'FOREST') cost = CLEAR_FOREST_COST;
@@ -70,8 +76,37 @@ export function applyTool(tiles: Tile[], size: number, tool: ToolId, x: number, 
     // Un pont rasé rend l'eau ; un bâtiment rasé laisse un terrain vague ; un terrain vague redevient de l'herbe.
     else if (tile.lake) next = reset(tile, 'LAKE');
     else next = reset(tile, tile.type === 'DIRT' ? 'GRASS' : 'DIRT');
+  } else if (tool === 'raise' || tool === 'lower') {
+    // Terrassement : uniquement sur un terrain nu ou une parcelle vide.
+    if (tile.type === 'LAKE' || tile.lake) return { ok: false, reason: 'On ne terrasse pas l’eau 🌊' };
+    if (isBuilding(tile) || isRoadType(tile.type) || tile.type === 'RAIL') return { ok: false, reason: 'Terrain occupé — passez le bulldozer 🚜' };
+    const elev = tile.elev + (tool === 'raise' ? 1 : -1);
+    if (elev < 0) return { ok: false, reason: 'Impossible de creuser plus bas' };
+    if (elev > MAX_ELEV) return { ok: false, reason: 'Sommet atteint ⛰️' };
+    // Creuser au ras de l'eau, au niveau 0, ne change rien : le niveau 0 est le plancher.
+    next = { ...tile, elev };
+  } else if (tool === 'tram') {
+    if (tile.type !== 'AVENUE') return { ok: false, reason: 'Le tramway se pose sur une avenue 🚋' };
+    if (tile.line & LINE_TRAM) return { ok: false, reason: '' };
+    next = { ...tile, line: tile.line | LINE_TRAM };
   } else {
     const places = def.places!;
+    const unlock = UNLOCK[places];
+    if (unlock !== undefined && places !== 'NUCLEAR' && population < unlock) return { ok: false, reason: `🔒 Débloqué à ${unlock} habitants` };
+    if (places === 'RAIL' && isRoadType(tile.type)) {
+      // Passage à niveau sur une rue ou une avenue (pas sur une autoroute).
+      if (tile.type === 'HIGHWAY') return { ok: false, reason: 'Pas de passage à niveau sur une autoroute 🛣' };
+      if (tile.lake) return { ok: false, reason: 'Pas de voie ferrée sur un pont routier 🌉' };
+      if (tile.line & LINE_RAIL) return { ok: false, reason: '' };
+      const cost = toolCost(tiles, size, tool, x, y);
+      if (funds < cost) return { ok: false, reason: 'Fonds insuffisants 💸' };
+      const out = tiles.slice();
+      out[idx] = { ...tile, line: tile.line | LINE_RAIL };
+      return { ok: true, tiles: out, cost };
+    }
+    if (places === 'RESORT' && (tile.type !== 'SAND' || !nextToLake(tiles, size, x, y))) {
+      return { ok: false, reason: 'Une plage s’aménage sur le sable, au bord de l’eau 🏖️' };
+    }
     if (tile.type === places) return { ok: false, reason: '' };
     if (tile.rad > 0) return { ok: false, reason: 'Terrain contaminé ☢️ — attendez la décontamination' };
     if (isMonument(places)) {
@@ -93,6 +128,8 @@ export function applyTool(tiles: Tile[], size: number, tool: ToolId, x: number, 
         return { ok: false, reason: 'Terrain occupé — passez le bulldozer 🚜' };
       }
       next = reset(tile, places, tile.type === 'LAKE' || tile.lake);
+      // Une montée en gamme garde le passage à niveau (sauf autoroute) et le tram (avenue seulement).
+      if (upgrade) next.line = places === 'HIGHWAY' ? 0 : tile.line & LINE_RAIL;
     } else {
       if (tile.type === 'LAKE') return { ok: false, reason: 'On ne construit pas sur l’eau 🌊' };
       if (!isBuildableGround(tile.type) && tile.type !== 'FOREST') return { ok: false, reason: 'Terrain occupé — passez le bulldozer 🚜' };

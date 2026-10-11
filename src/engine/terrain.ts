@@ -1,4 +1,4 @@
-import { createEmptyMap, type Tile } from './map';
+import { createEmptyMap, MAX_ELEV, type Tile } from './map';
 
 /** Générateur pseudo-aléatoire déterministe. */
 export function mulberry32(seed: number) {
@@ -87,11 +87,61 @@ export function createTerrainMap(size: number, seed = Date.now() % 100000): Tile
     if (shore > 0 && rand() < 0.75) t.type = 'SAND';
   }
 
-  // Forêts : massifs de bruit élevé, hors du centre et des plages.
+  // Relief : collines et montagnes (paliers de 0 à 3), jamais au bord de l'eau ni au centre.
+  const hills = makeNoise(seed + 53);
+  const hscale = 6 / size;
+  const distWater = waterDistance(tiles, size);
+  for (const t of tiles) {
+    if (t.type === 'LAKE' || t.type === 'SAND') continue;
+    const center = Math.hypot(t.x - cx, t.y - cy);
+    const h = hills(t.x * hscale + 7, t.y * hscale + 3);
+    // Plus on s'éloigne du centre et de l'eau, plus le relief peut monter.
+    const room = Math.min(1, Math.max(0, (center - clear) / 10)) * Math.min(1, Math.max(0, (distWater[t.y * size + t.x] - 1) / 4));
+    t.elev = Math.max(0, Math.min(MAX_ELEV, Math.floor((h - 0.4) * 13 * room)));
+  }
+  // Pas de falaise de plus d'un niveau entre deux tuiles voisines (relief en terrasses douces).
+  for (let pass = 0; pass < 3; pass++) {
+    for (const t of tiles) {
+      for (const [dx, dy] of [
+        [1, 0],
+        [-1, 0],
+        [0, 1],
+        [0, -1],
+      ]) {
+        const nx = t.x + dx;
+        const ny = t.y + dy;
+        if (inside(nx, ny) && t.elev > at(nx, ny).elev + 1) t.elev = at(nx, ny).elev + 1;
+      }
+    }
+  }
+
+  // Forêts : massifs de bruit élevé, hors du centre et des plages (plus denses en altitude).
   const wscale = 9 / size;
   for (const t of tiles) {
     if (t.type !== 'GRASS' || Math.hypot(t.x - cx, t.y - cy) < clear) continue;
-    if (woods(t.x * wscale + 40, t.y * wscale + 40) > 0.62) t.type = 'FOREST';
+    if (woods(t.x * wscale + 40, t.y * wscale + 40) > 0.62 - t.elev * 0.06) t.type = 'FOREST';
   }
   return tiles;
+}
+
+/** Distance (en tuiles, 4-connexité) de chaque tuile à l'eau la plus proche. */
+function waterDistance(tiles: Tile[], size: number): Int16Array {
+  const dist = new Int16Array(tiles.length).fill(32767);
+  const queue: number[] = [];
+  tiles.forEach((t, i) => {
+    if (t.type === 'LAKE') {
+      dist[i] = 0;
+      queue.push(i);
+    }
+  });
+  for (let h = 0; h < queue.length; h++) {
+    const i = queue[h];
+    const x = i % size;
+    for (const n of [x + 1 < size ? i + 1 : -1, x > 0 ? i - 1 : -1, i + size < tiles.length ? i + size : -1, i - size]) {
+      if (n < 0 || dist[n] <= dist[i] + 1) continue;
+      dist[n] = dist[i] + 1;
+      queue.push(n);
+    }
+  }
+  return dist;
 }

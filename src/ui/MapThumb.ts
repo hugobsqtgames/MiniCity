@@ -31,6 +31,18 @@ export function thumbColor(type: TileType, density = 1): string {
     case 'POWER':
     case 'NUCLEAR':
       return '#34495e';
+    case 'RAIL':
+      return '#6e4b2a';
+    case 'STATION':
+      return '#c0392b';
+    case 'HOTEL':
+      return '#8e44ad';
+    case 'RESORT':
+      return '#f7dc6f';
+    case 'TREATMENT':
+      return '#48c9b0';
+    case 'HIGHSCHOOL':
+      return '#ca6f1e';
     default:
       return '#d5d8dc';
   }

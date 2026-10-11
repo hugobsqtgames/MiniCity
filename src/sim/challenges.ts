@@ -23,6 +23,8 @@ export type Counters = {
   winterOk: number;
   /** Mois consécutifs avec un budget positif. */
   surplusStreak: number;
+  /** Demandes des habitants satisfaites. */
+  missions: number;
 };
 export const EMPTY_COUNTERS: Counters = {
   extinguished: 0,
@@ -37,6 +39,7 @@ export const EMPTY_COUNTERS: Counters = {
   rebuilt: 0,
   winterOk: 0,
   surplusStreak: 0,
+  missions: 0,
 };
 
 export type ChallengeContext = {
@@ -47,6 +50,8 @@ export type ChallengeContext = {
   dense: { R: number; C: number; I: number };
   built: { R: number; C: number; I: number };
   bridges: number;
+  tram: number;
+  tunnels: number;
   treasury: number;
   month: number;
   counters: Counters;
@@ -106,6 +111,10 @@ export const CHALLENGES: Challenge[] = [
   { id: 'fires50', parent: 'fires10', icon: '🎖️', title: 'Caserne d’élite', desc: 'Éteindre 50 incendies.', frame: 'challenge', reward: 15000, progress: (c) => [c.counters.extinguished, 50] },
   { id: 'hospital', parent: 'firestation', icon: '🏥', title: 'Santé pour tous', desc: 'Ouvrir un hôpital.', frame: 'task', reward: 1500, progress: has('HOSPITAL') },
   { id: 'school', parent: 'hospital', icon: '🏫', title: 'Bancs d’école', desc: 'Ouvrir 3 écoles.', frame: 'task', reward: 2000, progress: has('SCHOOL', 3) },
+  { id: 'highschool', parent: 'school', icon: '🎒', title: 'Bac en poche', desc: 'Ouvrir un lycée.', frame: 'task', reward: 2500, progress: has('HIGHSCHOOL') },
+  { id: 'educated', parent: 'highschool', icon: '📚', title: 'Ville savante', desc: 'Niveau d’éducation de 70 % avec 3 000 habitants.', frame: 'goal', reward: 12000, progress: withPop(3000, (c) => c.stats.educationLevel >= 70) },
+  { id: 'hightech', parent: 'educated', icon: '💾', title: 'Silicon Valley', desc: '500 emplois de haute technologie.', frame: 'challenge', reward: 20000, progress: (c) => [c.stats.specJobs[3], 500] },
+  { id: 'cure', parent: 'hospital', icon: '💉', title: 'Bonne santé', desc: 'Construire une station d’épuration.', frame: 'task', reward: 2500, progress: has('TREATMENT') },
   { id: 'university', parent: 'school', icon: '🎓', title: 'Campus', desc: 'Construire l’université.', frame: 'goal', reward: 10000, progress: has('UNIVERSITY') },
 
   // Transports.
@@ -114,6 +123,10 @@ export const CHALLENGES: Challenge[] = [
   { id: 'highway', parent: 'avenue', icon: '🚙', title: 'Voie rapide', desc: '30 tuiles d’autoroute.', frame: 'task', reward: 3000, progress: has('HIGHWAY', 30) },
   { id: 'airport', parent: 'highway', icon: '✈️', title: 'Envol', desc: 'Construire l’aéroport.', frame: 'goal', reward: 15000, progress: has('AIRPORT') },
   { id: 'bridge', parent: 'roads50', icon: '🌉', title: 'Jeter des ponts', desc: 'Construire 3 ponts.', frame: 'task', reward: 2000, progress: (c) => [c.bridges, 3] },
+  { id: 'tram', parent: 'avenue', icon: '🚋', title: 'Tramway', desc: '12 tuiles de tramway.', frame: 'task', reward: 3000, progress: (c) => [c.tram, 12] },
+  { id: 'rail', parent: 'roads50', icon: '🚆', title: 'Chemin de fer', desc: 'Relier 2 gares par une voie ferrée.', frame: 'task', reward: 4000, progress: (c) => [Math.max(c.stats.linkedStations, Math.min(1, n(c, 'STATION'))), 2] },
+  { id: 'tunnel', parent: 'rail', icon: '⛰️', title: 'Percée', desc: 'Creuser 3 tunnels sous les montagnes.', frame: 'task', reward: 3000, progress: (c) => [c.tunnels, 3] },
+  { id: 'parking', parent: 'roads50', icon: '🅿️', title: 'Se garer', desc: 'Construire 3 parkings.', frame: 'task', reward: 1500, progress: has('PARKING', 3) },
   { id: 'bus5', parent: 'roads50', icon: '🚏', title: 'Ligne de bus', desc: '5 arrêts de bus.', frame: 'task', reward: 1500, progress: has('BUSSTOP', 5) },
   { id: 'metro3', parent: 'bus5', icon: '🚇', title: 'Métro', desc: '3 stations de métro.', frame: 'task', reward: 3000, progress: has('METRO', 3) },
   { id: 'fluid', parent: 'metro3', icon: '🟢', title: 'Circulation fluide', desc: 'Bouchons sous 50 % avec 5 000 habitants.', frame: 'challenge', reward: 20000, progress: withPop(5000, (c) => c.stats.congestion <= 50) },
@@ -144,6 +157,8 @@ export const CHALLENGES: Challenge[] = [
   { id: 'fireworks', parent: 'fair', icon: '🎆', title: 'Feu d’artifice', desc: 'Admirer le feu d’artifice du 14 juillet.', frame: 'task', reward: 2000, progress: (c) => [c.counters.fireworks, 1] },
   { id: 'events25', parent: 'fair', icon: '🎉', title: 'Ville festive', desc: 'Accueillir 25 événements.', frame: 'goal', reward: 10000, progress: (c) => [c.counters.events, 25] },
   { id: 'events100', parent: 'events25', icon: '🥳', title: 'Capitale de la fête', desc: 'Accueillir 100 événements.', frame: 'challenge', reward: 30000, progress: (c) => [c.counters.events, 100] },
+  { id: 'resort', parent: 'market', icon: '🏖️', title: 'Station balnéaire', desc: 'Aménager 3 plages.', frame: 'task', reward: 2000, progress: has('RESORT', 3) },
+  { id: 'hotel', parent: 'resort', icon: '🏨', title: 'Bienvenue', desc: 'Accueillir 1 000 touristes en un mois.', frame: 'goal', reward: 8000, progress: (c) => [c.stats.tourists, 1000] },
   { id: 'arena', parent: 'fair', icon: '🎵', title: 'Scène ouverte', desc: 'Construire une salle de concert.', frame: 'task', reward: 2500, progress: has('ARENA') },
   { id: 'concerts5', parent: 'arena', icon: '🎸', title: 'Tournée', desc: '5 concerts.', frame: 'task', reward: 4000, progress: (c) => [c.counters.concert, 5] },
   { id: 'stadium', parent: 'arena', icon: '🏟️', title: 'Stade', desc: 'Construire un stade.', frame: 'task', reward: 4000, progress: has('STADIUM') },
@@ -158,6 +173,7 @@ export const CHALLENGES: Challenge[] = [
   { id: 'winter', parent: 'year1', icon: '❄️', title: 'Hiver maîtrisé', desc: 'Passer 3 mois d’hiver déneigés (budget transports ≥ 80 %, 1 000 habitants).', frame: 'task', reward: 3000, progress: (c) => [c.counters.winterOk, 3] },
   { id: 'disaster1', parent: 'year1', icon: '🌪️', title: 'Survivant', desc: 'Traverser une catastrophe.', frame: 'task', reward: 3000, progress: (c) => [c.counters.disasters, 1] },
   { id: 'phoenix', parent: 'disaster1', icon: '🐦‍🔥', title: 'Phénix', desc: 'Reconstruire 20 bâtiments sinistrés.', frame: 'goal', reward: 8000, progress: (c) => [c.counters.rebuilt, 20] },
+  { id: 'mayor', parent: 'year1', icon: '🙋', title: 'À l’écoute', desc: 'Satisfaire 5 demandes des habitants.', frame: 'goal', reward: 8000, progress: (c) => [c.counters.missions, 5] },
   { id: 'disaster5', parent: 'disaster1', icon: '🏚️', title: 'Indestructible', desc: 'Traverser 5 catastrophes.', frame: 'challenge', reward: 25000, progress: (c) => [c.counters.disasters, 5] },
 ];
 
@@ -176,7 +192,11 @@ export function challengeContext(
   const dense = { R: 0, C: 0, I: 0 };
   const built = { R: 0, C: 0, I: 0 };
   let bridges = 0;
+  let tram = 0;
+  let tunnels = 0;
   for (const t of tiles) {
+    if (t.type === 'AVENUE' && t.line & 1) tram++;
+    if (isRoadType(t.type) && t.elev >= 2) tunnels++;
     count[t.type] = (count[t.type] ?? 0) + 1;
     if (isZone(t.type) && t.density > 0) {
       built[t.type]++;
@@ -184,7 +204,7 @@ export function challengeContext(
     }
     if (t.lake && isRoadType(t.type)) bridges++;
   }
-  return { stats, count, dense, built, bridges, treasury, month, counters, policy };
+  return { stats, count, dense, built, bridges, tram, tunnels, treasury, month, counters, policy };
 }
 
 /** Défis nouvellement réussis (parent réussi et objectif atteint). */

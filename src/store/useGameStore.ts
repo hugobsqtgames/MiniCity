@@ -45,15 +45,21 @@ import {
   type Demand,
   type DisasterEvent,
   type DisasterKind,
+  type Epidemic,
   type Policy,
   type Weather,
 } from '../sim/simulation';
 import { dragModeOf, dragTiles, type Drag } from '../sim/drag';
+import { missionProgress, missionText, proposeMission, type Mission } from '../sim/missions';
+import { EMPTY_RECORDS, updateRecords, type CityRecords } from '../sim/records';
 import { applyTool, gridLine, toolCost } from '../sim/tools';
 import {
   DEFAULT_SETTINGS,
   EMPTY_HISTORY,
+  makeFrame,
   saveSettings,
+  TIMELAPSE_MAX,
+  type TimelapseFrame,
   type History,
   type NewsEntry,
   type SavedGame,
@@ -77,7 +83,7 @@ export type CitizenInfo = {
 };
 
 /** Onglets du menu (null = fermé). */
-export type MenuTab = 'advisors' | 'city' | 'districts' | 'budget' | 'laws' | 'events' | 'news' | 'charts' | 'settings';
+export type MenuTab = 'advisors' | 'city' | 'districts' | 'budget' | 'laws' | 'events' | 'news' | 'charts' | 'records' | 'settings';
 
 /** Une action à annuler : les tuiles modifiées (avant / après) et son coût. */
 type UndoAction = { cells: { i: number; before: Tile; after: Tile }[]; cost: number };
@@ -101,6 +107,15 @@ type GameState = {
   funding: Funding;
   ordinances: Ordinances;
   disasters: boolean;
+  /** Catastrophes « fun » : météorite, monstre géant. */
+  funDisasters: boolean;
+  epidemic: Epidemic | null;
+  /** Demandes des habitants en cours. */
+  missions: Mission[];
+  missionSeq: number;
+  records: CityRecords;
+  timelapse: TimelapseFrame[];
+  timelapseOpen: boolean;
   pendingDisaster: DisasterKind | null;
   /** Dernière catastrophe (pour l'animer : tornade, secousse). */
   lastDisaster: { event: DisasterEvent; at: number } | null;
@@ -155,6 +170,8 @@ type GameState = {
   setFunding: (key: FundingKey, value: number) => void;
   toggleOrdinance: (id: OrdinanceId) => void;
   setDisasters: (on: boolean) => void;
+  setFunDisasters: (on: boolean) => void;
+  openTimelapse: (open: boolean) => void;
   triggerDisaster: (kind: DisasterKind) => void;
   rotate: (dir: 1 | -1) => void;
   setDataView: (view: DataView) => void;
@@ -223,6 +240,11 @@ function freshCity(tiles: Tile[], size: number, treasury: number, name = randomC
     forcedEvents: [] as { x: number; y: number }[],
     counters: EMPTY_COUNTERS,
     challenges: {} as Record<string, number>,
+    epidemic: null as Epidemic | null,
+    missions: [] as Mission[],
+    missionSeq: 0,
+    records: EMPTY_RECORDS,
+    timelapse: [makeFrame(powered, size, 0, a.stats.population)] as TimelapseFrame[],
   };
 }
 
@@ -320,6 +342,8 @@ export const useGameStore = create<GameState>()((set, get) => {
     hydrated: false,
     ...freshCity(createEmptyMap(50), 50, START_FUNDS, 'Ma ville'),
     disasters: false,
+    funDisasters: false,
+    timelapseOpen: false,
     speed: 1,
     paused: false,
     rotation: 0,
@@ -457,6 +481,8 @@ export const useGameStore = create<GameState>()((set, get) => {
         policy,
         demand: s.demand,
         disasters: s.disasters,
+        funDisasters: s.funDisasters,
+        epidemic: s.epidemic,
         trigger: s.pendingDisaster,
         month,
         forcedEvents: s.forcedEvents,
@@ -516,6 +542,50 @@ export const useGameStore = create<GameState>()((set, get) => {
         haptic('success');
       }
 
+      // Demandes des habitants : récompense si le quartier est satisfait avant l'échéance.
+      const missions: Mission[] = [];
+      let missionSeq = s.missionSeq;
+      for (const m of s.missions) {
+        const p = missionProgress(m, res.tiles, s.gridSize, res.analysis);
+        const { icon, district } = missionText(m, s.gridSize);
+        if (p.done) {
+          treasury += m.reward;
+          c.missions = (c.missions ?? 0) + 1;
+          news.push({ icon, text: `Demande satisfaite à ${district} : merci, Monsieur le Maire ! (+${m.reward} $)`, month });
+          if (!won.length) {
+            get().showToast(`${icon} Demande satisfaite (+${m.reward} $)`);
+            playSfx('fanfare');
+          }
+        } else if (month >= m.deadline) {
+          news.push({ icon: '😞', text: `Les habitants de ${district} sont déçus : leur demande n’a pas été entendue.`, month });
+        } else missions.push(m);
+      }
+      if (month % 4 === 0) {
+        const m = proposeMission(res.tiles, s.gridSize, res.analysis, month, missions, Math.random, missionSeq + 1);
+        if (m) {
+          missionSeq++;
+          missions.push(m);
+          const { icon, text } = missionText(m, s.gridSize);
+          news.push({ icon, text: `${text} (12 mois)`, month });
+        }
+      }
+
+      // Records et timelapse (une image tous les 6 mois).
+      const { records } = updateRecords(s.records, {
+        month,
+        population: res.stats.population,
+        treasury,
+        happiness: res.stats.happiness,
+        net,
+        income: res.income,
+        streak: c.surplusStreak,
+        tourists: res.stats.tourists,
+        events: res.cityEvents.length,
+        fires: res.events.newFires,
+        disasters: res.events.disasters.map((d) => ({ kind: d.kind, damage: d.damage })),
+      });
+      const timelapse = month % 6 === 0 ? [...s.timelapse, makeFrame(res.tiles, s.gridSize, month, res.stats.population)].slice(-TIMELAPSE_MAX) : s.timelapse;
+
       // Journal : une plainte de temps en temps.
       const complaint = month % 6 === 0 ? topComplaint(res.stats, s.taxes) : null;
       if (complaint) news.push({ ...complaint, month });
@@ -539,6 +609,11 @@ export const useGameStore = create<GameState>()((set, get) => {
         forcedEvents: [],
         counters: c,
         challenges: done,
+        epidemic: res.epidemic,
+        missions,
+        missionSeq,
+        records,
+        timelapse,
         pendingDisaster: null,
         lastDisaster: disaster ? { event: disaster, at: Date.now() } : s.lastDisaster,
         news: news.length ? [...news.reverse(), ...s.news].slice(0, 60) : s.news,
@@ -558,6 +633,8 @@ export const useGameStore = create<GameState>()((set, get) => {
     setFunding: (key, value) => set({ funding: { ...get().funding, [key]: Math.max(0, Math.min(120, Math.round(value / 10) * 10)) } }),
     toggleOrdinance: (id) => set({ ordinances: { ...get().ordinances, [id]: !get().ordinances[id] } }),
     setDisasters: (on) => set({ disasters: on }),
+    setFunDisasters: (on) => set({ funDisasters: on }),
+    openTimelapse: (open) => set({ timelapseOpen: open, menuTab: open ? null : get().menuTab }),
     triggerDisaster: (kind) => {
       set({ pendingDisaster: kind, paused: false });
       get().showToast(`${DISASTER_LABELS[kind].icon} ${DISASTER_LABELS[kind].label} imminent…`);
@@ -605,7 +682,7 @@ export const useGameStore = create<GameState>()((set, get) => {
     setCityName: (name) => set({ cityName: name.slice(0, 24) || 'Ma ville' }),
 
     newCity: (size = GRID_SIZE) =>
-      set({ ...freshCity(createTerrainMap(size), size, START_FUNDS), paused: false, rotation: 0, dataView: 'none', disasters: get().disasters }),
+      set({ ...freshCity(createTerrainMap(size), size, START_FUNDS), paused: false, rotation: 0, dataView: 'none', disasters: get().disasters, funDisasters: get().funDisasters }),
     loadDemoCity: () => set({ ...freshCity(createDemoMap(50), 50, 50000, 'Démoville', true), paused: false, rotation: 0, dataView: 'none' }),
 
     hydrate: (save) => {
@@ -616,7 +693,7 @@ export const useGameStore = create<GameState>()((set, get) => {
       }
       const tiles = applyPower(save.tiles, save.gridSize, save.month);
       const policy = { taxes: save.taxes, funding: save.funding, ordinances: save.ordinances };
-      const a = analyzeCity(tiles, save.gridSize, policy, save.month);
+      const a = analyzeCity(tiles, save.gridSize, policy, save.month, save.cityEvents, save.epidemic);
       set({
         hydrated: true,
         gridSize: save.gridSize,
@@ -629,6 +706,13 @@ export const useGameStore = create<GameState>()((set, get) => {
         funding: save.funding,
         ordinances: save.ordinances,
         disasters: save.disasters,
+        funDisasters: save.funDisasters,
+        epidemic: save.epidemic,
+        missions: save.missions,
+        missionSeq: save.missionSeq,
+        records: save.records,
+        timelapse: save.timelapse.length ? save.timelapse : [makeFrame(tiles, save.gridSize, save.month, a.stats.population)],
+        timelapseOpen: false,
         demand: save.demand,
         speed: save.speed,
         history: save.history,
@@ -681,6 +765,12 @@ export const useGameStore = create<GameState>()((set, get) => {
         weather: s.weather,
         cityEvents: s.cityEvents,
         forcedEvents: s.forcedEvents,
+        funDisasters: s.funDisasters,
+        epidemic: s.epidemic,
+        missions: s.missions,
+        missionSeq: s.missionSeq,
+        records: s.records,
+        timelapse: s.timelapse,
       };
     },
   };

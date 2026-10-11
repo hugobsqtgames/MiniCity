@@ -19,8 +19,11 @@ import { Canvas, Picture } from '@shopify/react-native-skia';
 
 import type { SlotActions } from '../hooks/usePersistence';
 import { ADVISORS } from '../sim/advisors';
-import { computeDistrictStats } from '../sim/districts';
+import { computeDistrictStats, districtMap } from '../sim/districts';
+import { missionProgress, missionText } from '../sim/missions';
+import type { CityRecords } from '../sim/records';
 import { DISASTER_LABELS, EVENT_LABELS, type DisasterKind } from '../sim/simulation';
+import { SPEC_NAMES } from '../engine/map';
 import { previewType, type Quality, type SlotMeta } from '../store/persistence';
 import { useGameStore, type MenuTab } from '../store/useGameStore';
 import { buildThumbPicture } from './MapThumb';
@@ -41,6 +44,7 @@ const TABS: { id: MenuTab; label: string }[] = [
   { id: 'events', label: '🎉 Événements' },
   { id: 'news', label: '📰 Journal' },
   { id: 'charts', label: '📈 Graphiques' },
+  { id: 'records', label: '🏅 Records' },
   { id: 'settings', label: '⚙️ Réglages' },
 ];
 
@@ -144,6 +148,7 @@ export function MenuSheet({ onSaveNow, lastSavedAt, slots }: { onSaveNow: () => 
         {tab === 'laws' && <LawsTab />}
         {tab === 'news' && <NewsTab />}
         {tab === 'charts' && <ChartsTab />}
+        {tab === 'records' && <RecordsTab />}
         {tab === 'settings' && <SettingsTab onClose={onClose} onSaveNow={onSaveNow} lastSavedAt={lastSavedAt} slots={slots} />}
       </ScrollView>
     </Glass>
@@ -200,7 +205,21 @@ function CityTab() {
         <Stat label="Trajet moyen" value={`${st.commute} min`} color={st.commute > 30 ? theme.negative : undefined} />
         <Stat label="Bouchons" value={`${st.congestion} %`} color={st.congestion > 60 ? theme.negative : undefined} />
         <Stat label="Bus + métro" value={formatNumber(st.busRiders + st.metroRiders)} />
+        <Stat label="Tram + train" value={formatNumber(st.tramRiders + st.trainRiders)} />
+        <Stat label="Parkings" value={st.parkingShortage ? `${st.parkingShortage} manquent` : 'OK'} color={st.parkingShortage ? theme.negative : undefined} />
       </View>
+
+      <Text style={styles.section}>Éducation, santé, tourisme</Text>
+      <View style={styles.statsGrid}>
+        <Stat label="Niveau d’études" value={`${st.educationLevel} %`} color={st.educationLevel < 35 ? theme.negative : st.educationLevel >= 70 ? theme.positive : undefined} />
+        <Stat label="Épidémie" value={st.epidemic ? `${st.epidemic} %` : 'aucune'} color={st.epidemic ? theme.negative : theme.positive} />
+        <Stat label="Eau des lacs" value={`${st.waterPollution} % polluée`} color={st.waterPollution > 30 ? theme.negative : undefined} />
+        <Stat label="Touristes" value={formatNumber(st.tourists)} />
+        <Stat label="À l’hôtel" value={st.tourists ? `${Math.round((st.hotelGuests / st.tourists) * 100)} %` : '—'} color={st.tourists && st.hotelGuests < st.tourists * 0.5 ? theme.negative : undefined} />
+      </View>
+      <Text style={styles.hint}>
+        École 40 %, lycée 35 %, université 25 % : sans diplômés, pas de tours de bureaux ni d’industrie de pointe. Sans hôtel, les touristes ne restent que la journée et dépensent moitié moins.
+      </Text>
 
       <Text style={styles.section}>Énergie et industrie</Text>
       <View style={styles.statsGrid}>
@@ -212,6 +231,13 @@ function CityTab() {
           color={st.exports.jobs && Math.min(st.exports.capacity, st.exports.connected) < st.exports.jobs * 0.9 ? theme.negative : undefined}
         />
       </View>
+      {st.jobsI > 0 && (
+        <View style={styles.statsGrid}>
+          {SPEC_NAMES.map((n, k) => (
+            <Stat key={n} label={['🏭', '🌾', '🪵', '💾'][k] + ' ' + n} value={formatNumber(st.specJobs[k])} />
+          ))}
+        </View>
+      )}
       <Gauge icon="🔌" label="Charge du réseau" value={st.power.supply ? Math.min(100, Math.round((st.power.demand / st.power.supply) * 100)) : 0} color={st.power.demand > st.power.supply * 0.9 ? '#e74c3c' : '#f1c40f'} />
 
       <Text style={styles.section}>Services publics (bâtiments desservis)</Text>
@@ -288,6 +314,8 @@ function LawsTab() {
   const setDisasters = useGameStore((s) => s.setDisasters);
   const trigger = useGameStore((s) => s.triggerDisaster);
   const pending = useGameStore((s) => s.pendingDisaster);
+  const fun = useGameStore((s) => s.funDisasters);
+  const setFun = useGameStore((s) => s.setFunDisasters);
 
   return (
     <>
@@ -316,6 +344,14 @@ function LawsTab() {
           <Text style={styles.lawEffect}>Séismes, inondations, tornades, pannes</Text>
         </View>
         <Switch value={disasters} onValueChange={setDisasters} trackColor={{ true: theme.negative, false: 'rgba(255,255,255,0.2)' }} />
+      </View>
+      <View style={styles.law}>
+        <Text style={styles.lawIcon}>🦖</Text>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.rowLabel}>Catastrophes fun</Text>
+          <Text style={styles.lawEffect}>Météorites et monstre géant, de temps en temps</Text>
+        </View>
+        <Switch value={fun} onValueChange={setFun} trackColor={{ true: theme.negative, false: 'rgba(255,255,255,0.2)' }} />
       </View>
       <View style={styles.actions}>
         {(Object.keys(DISASTER_LABELS) as DisasterKind[]).map((k) => (
@@ -379,9 +415,10 @@ function SettingsTab({ onClose, onSaveNow, lastSavedAt, slots }: { onClose: () =
   const setCityName = useGameStore((s) => s.setCityName);
   const askConfirm = useGameStore((s) => s.askConfirm);
   const [name, setName] = useState(cityName);
-  const toggles: { key: 'music' | 'sounds' | 'showAgents' | 'dayNight' | 'weather' | 'minimap'; label: string }[] = [
+  const toggles: { key: 'music' | 'sounds' | 'ambience' | 'showAgents' | 'dayNight' | 'weather' | 'minimap'; label: string }[] = [
     { key: 'music', label: '🎵 Musique' },
     { key: 'sounds', label: '🔊 Effets sonores' },
+    { key: 'ambience', label: '🐦 Ambiance (ville, oiseaux, pluie)' },
     { key: 'showAgents', label: '🚗 Trafic et piétons' },
     { key: 'dayNight', label: '🌙 Cycle jour / nuit' },
     { key: 'weather', label: '🌦️ Météo animée' },
@@ -554,14 +591,58 @@ function SlotCard({ slot, meta, current, slots, onClose }: { slot: number; meta:
 
 const SEVERITY_COLORS = ['#5dade2', '#f1c40f', '#e67e22', '#e74c3c'];
 
+/** Demandes des habitants en cours : quartier, progression, échéance, récompense. */
+function MissionsList() {
+  const missions = useGameStore((s) => s.missions);
+  const tiles = useGameStore((s) => s.tiles);
+  const size = useGameStore((s) => s.gridSize);
+  const analysis = useGameStore((s) => s.analysis);
+  const month = useGameStore((s) => s.month);
+  const focusOn = useGameStore((s) => s.focusOn);
+  if (!missions.length || !analysis) return null;
+  return (
+    <>
+      <Text style={styles.section}>🙋 Demandes des habitants</Text>
+      {missions.map((m) => {
+        const { icon, text } = missionText(m, size);
+        const p = missionProgress(m, tiles, size, analysis);
+        const d = districtMap(size).list[m.district];
+        const left = m.deadline - month;
+        return (
+          <View key={m.id} style={[styles.advice, { borderLeftColor: left <= 3 ? theme.negative : '#f4d03f' }]}>
+            <Text style={styles.adviceTitle}>
+              {icon} {text}
+            </Text>
+            <Text style={styles.adviceText}>
+              Actuellement {p.value} % (objectif {MISSION_GOAL_WORD(p.goal, p.value, p.done)}) · {left} mois restants · récompense {formatMoney(m.reward)}
+            </Text>
+            <View style={styles.actions}>
+              <Btn small label="📍 Voir le quartier" onPress={() => focusOn(d.cx, d.cy)} />
+            </View>
+          </View>
+        );
+      })}
+    </>
+  );
+}
+
+const MISSION_GOAL_WORD = (goal: number, value: number, done: boolean) => (done ? 'atteint ✅' : value > goal ? `≤ ${goal} %` : `≥ ${goal} %`);
+
 function AdvisorsTab() {
   const advice = useGameStore((s) => s.advice);
   const focusOn = useGameStore((s) => s.focusOn);
   const setTool = useGameStore((s) => s.setTool);
   const openMenu = useGameStore((s) => s.openMenu);
-  if (!advice.length) return <Text style={styles.hint}>Vos conseillers n’ont rien à signaler pour l’instant.</Text>;
+  if (!advice.length)
+    return (
+      <>
+        <MissionsList />
+        <Text style={styles.hint}>Vos conseillers n’ont rien à signaler pour l’instant.</Text>
+      </>
+    );
   return (
     <>
+      <MissionsList />
       {advice.map((a) => {
         const who = ADVISORS[a.advisor];
         return (
@@ -694,6 +775,51 @@ function Gauge({ icon, label, value, color }: { icon: string; label: string; val
   );
 }
 
+const RECORD_ROWS: { key: keyof CityRecords; icon: string; label: string; fmt: (v: number) => string }[] = [
+  { key: 'population', icon: '👨‍👩‍👧‍👦', label: 'Population maximale', fmt: formatNumber },
+  { key: 'treasury', icon: '💰', label: 'Caisse la plus pleine', fmt: formatMoney },
+  { key: 'happiness', icon: '😊', label: 'Meilleure satisfaction', fmt: (v) => `${v} %` },
+  { key: 'bestMonth', icon: '📈', label: 'Meilleur mois', fmt: (v) => `+${formatMoney(v)}` },
+  { key: 'worstMonth', icon: '📉', label: 'Pire mois', fmt: (v) => formatMoney(v) },
+  { key: 'surplusStreak', icon: '🔥', label: 'Série de mois excédentaires', fmt: (v) => `${v} mois` },
+  { key: 'tourists', icon: '🧳', label: 'Touristes en un mois', fmt: formatNumber },
+];
+
+function RecordsTab() {
+  const r = useGameStore((s) => s.records);
+  const frames = useGameStore((s) => s.timelapse.length);
+  const openTimelapse = useGameStore((s) => s.openTimelapse);
+  return (
+    <>
+      <View style={styles.actions}>
+        <Btn label={`🎞️ Timelapse de la ville (${frames} image${frames > 1 ? 's' : ''})`} tone="primary" onPress={() => openTimelapse(true)} />
+      </View>
+      <Text style={styles.hint}>Une image est prise tous les 6 mois : regardez votre ville grandir.</Text>
+      <Text style={styles.section}>Records</Text>
+      {RECORD_ROWS.map((row) => {
+        const e = r[row.key] as { value: number; month: number };
+        return (
+          <Row key={row.key} label={`${row.icon} ${row.label}`}>
+            <Text style={styles.recordValue}>{e.value || e.month ? row.fmt(e.value) : '—'}</Text>
+            {e.value || e.month ? <Text style={styles.slotSub}>{formatDate(e.month)}</Text> : null}
+          </Row>
+        );
+      })}
+      <Row label={`💥 Pire catastrophe`}>
+        <Text style={styles.recordValue}>{r.disaster.value ? `${r.disaster.value} tuiles` : '—'}</Text>
+        {r.disaster.value ? <Text style={styles.slotSub}>{(DISASTER_LABELS[r.disaster.kind as DisasterKind]?.label ?? '') + ' · ' + formatDate(r.disaster.month)}</Text> : null}
+      </Row>
+      <Text style={styles.section}>Depuis la fondation</Text>
+      <View style={styles.statsGrid}>
+        <Stat label="Recettes cumulées" value={formatMoney(r.totalIncome)} />
+        <Stat label="Événements" value={formatNumber(r.totalEvents)} />
+        <Stat label="Incendies" value={formatNumber(r.totalFires)} />
+        <Stat label="Catastrophes" value={formatNumber(r.totalDisasters)} />
+      </View>
+    </>
+  );
+}
+
 function Stat({ label, value, color }: { label: string; value: string; color?: string }) {
   return (
     <View style={styles.stat}>
@@ -769,6 +895,7 @@ const styles = StyleSheet.create({
   slotThumb: { width: 96, height: 48, alignItems: 'center', justifyContent: 'center', borderRadius: 8, backgroundColor: 'rgba(0,0,0,0.25)' },
   slotEmpty: { color: theme.textDim, fontSize: 12 },
   slotSub: { color: theme.textDim, fontSize: 12 },
+  recordValue: { color: theme.text, fontSize: 14, fontWeight: '800', fontVariant: ['tabular-nums'] },
   slotActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 4 },
   advice: { padding: 12, borderRadius: 14, backgroundColor: 'rgba(255,255,255,0.06)', borderLeftWidth: 4, gap: 6 },
   adviceHead: { flexDirection: 'row', gap: 10, alignItems: 'center' },
