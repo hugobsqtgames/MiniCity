@@ -1,6 +1,7 @@
 import { createEmptyMap } from '../engine/map';
+import { EMPTY_COUNTERS } from '../sim/challenges';
 import { DEFAULT_FUNDING, DEFAULT_ORDINANCES } from '../sim/constants';
-import { deserialize, EMPTY_HISTORY, serialize, type SavedGame } from '../store/persistence';
+import { deserialize, EMPTY_HISTORY, makePreview, previewType, serialize, type SavedGame } from '../store/persistence';
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- jest.mock ne peut pas utiliser d'import statique
 jest.mock('@react-native-async-storage/async-storage', () => require('@react-native-async-storage/async-storage/jest/async-storage-mock'));
@@ -11,7 +12,9 @@ function game(): SavedGame {
   tiles[1] = { ...tiles[1], type: 'R', density: 3, garbage: 4 };
   tiles[2] = { ...tiles[2], type: 'POWER', flood: 2 };
   tiles[3] = { ...tiles[3], type: 'STADIUM' };
-  tiles[4] = { ...tiles[4], type: 'FOREST' };
+  tiles[4] = { ...tiles[4], type: 'FOREST', rad: 3 };
+  tiles[5] = { ...tiles[5], type: 'NUCLEAR' };
+  tiles[6] = { ...tiles[6], type: 'PORT' };
   return {
     gridSize: 6,
     tiles,
@@ -26,6 +29,9 @@ function game(): SavedGame {
     history: { ...EMPTY_HISTORY, pop: [1, 2, 3] },
     news: [{ month: 3, icon: '🎉', text: 'Bravo' }],
     rotation: 3,
+    cityName: 'Belle-Rive',
+    counters: { ...EMPTY_COUNTERS, match: 4 },
+    challenges: { start: 2, pop100: 9 },
   };
 }
 
@@ -34,7 +40,10 @@ describe('sauvegarde locale', () => {
     const g = game();
     const back = deserialize(serialize(g))!;
     expect(back).not.toBeNull();
-    expect(back.tiles.map((t) => [t.type, t.density, t.lake, t.garbage, t.flood])).toEqual(g.tiles.map((t) => [t.type, t.density, t.lake, t.garbage, t.flood]));
+    expect(back.tiles.map((t) => [t.type, t.density, t.lake, t.garbage, t.flood, t.rad])).toEqual(g.tiles.map((t) => [t.type, t.density, t.lake, t.garbage, t.flood, t.rad]));
+    expect(back.cityName).toBe('Belle-Rive');
+    expect(back.counters.match).toBe(4);
+    expect(back.challenges).toEqual({ start: 2, pop100: 9 });
     expect(back.taxes).toEqual(g.taxes);
     expect(back.funding.police).toBe(120);
     expect(back.ordinances.recycling).toBe(true);
@@ -61,6 +70,17 @@ describe('sauvegarde locale', () => {
     expect(g.taxes).toEqual({ R: 12, C: 12, I: 12 });
     expect(g.funding).toEqual(DEFAULT_FUNDING);
     expect(g.rotation).toBe(0);
+    expect(g.challenges).toEqual({});
+    expect(g.counters.events).toBe(0);
+  });
+
+  it('fabrique un aperçu sous-échantillonné pour les emplacements', () => {
+    const tiles = createEmptyMap(100);
+    tiles[0] = { ...tiles[0], type: 'ROAD' };
+    const { preview, previewSize } = makePreview(tiles, 100);
+    expect(previewSize).toBe(50);
+    expect(preview.length).toBe(2500);
+    expect(previewType(preview[0])).toBe('ROAD');
   });
 
   it('refuse un fichier corrompu', () => {

@@ -1,10 +1,13 @@
 import { useState } from 'react';
-import { Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import { Pressable, StyleSheet, useWindowDimensions, View } from 'react-native';
 import Animated, { FadeIn, FadeInRight, FadeOut, FadeOutRight } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { HEAT_STOPS } from '../engine/renderer';
+import { CHALLENGES } from '../sim/challenges';
 import { DATA_VIEWS, type DataView } from '../sim/constants';
 import { useGameStore } from '../store/useGameStore';
+import { Text } from './Text';
 import { HUD_HEIGHT } from './Hud';
 import { WIDE_LAYOUT } from './MenuSheet';
 import { theme } from './theme';
@@ -16,6 +19,9 @@ const LEGENDS: Record<Exclude<DataView, 'none'>, [string, string]> = {
   crime: ['sûr', 'dangereux'],
   value: ['quartier chic', 'peu prisé'],
   garbage: ['propre', 'ordures'],
+  happiness: ['heureux', 'mécontents'],
+  power: ['alimenté', 'sans courant'],
+  districts: ['', ''],
 };
 
 function RoundBtn({ label, onPress, disabled, active, a11y }: { label: string; onPress: () => void; disabled?: boolean; active?: boolean; a11y: string }) {
@@ -49,6 +55,11 @@ export function MapControls() {
   const dataView = useGameStore((s) => s.dataView);
   const setDataView = useGameStore((s) => s.setDataView);
   const [viewsOpen, setViewsOpen] = useState(false);
+  const urgent = useGameStore((s) => s.advice.filter((a) => a.severity >= 2).length);
+  const openMenu = useGameStore((s) => s.openMenu);
+  const openChallenges = useGameStore((s) => s.openChallenges);
+  const doneCount = useGameStore((s) => Object.keys(s.challenges).length);
+  const colorblind = useGameStore((s) => s.settings.colorblind);
   const current = DATA_VIEWS.find((v) => v.id === dataView) ?? DATA_VIEWS[0];
 
   return (
@@ -61,6 +72,23 @@ export function MapControls() {
         <RoundBtn label="⟳" a11y="Tourner la vue à droite" onPress={() => rotate(1)} />
         <View style={styles.sep} />
         <RoundBtn label={current.icon} a11y="Vues de données" onPress={() => setViewsOpen((o) => !o)} active={viewsOpen || dataView !== 'none'} />
+        <View style={styles.sep} />
+        <View>
+          <RoundBtn label="💡" a11y="Conseillers" onPress={() => openMenu('advisors')} />
+          {urgent > 0 && (
+            <View style={styles.badge} pointerEvents="none">
+              <Text style={styles.badgeText}>{urgent}</Text>
+            </View>
+          )}
+        </View>
+        <View>
+          <RoundBtn label="🏆" a11y="Arbre de défis" onPress={() => openChallenges(true)} />
+          <View style={[styles.badge, styles.badgeGold]} pointerEvents="none">
+            <Text style={styles.badgeText}>
+              {doneCount}/{CHALLENGES.length}
+            </Text>
+          </View>
+        </View>
       </Glass>
 
       {viewsOpen && (
@@ -84,14 +112,14 @@ export function MapControls() {
         </Animated.View>
       )}
 
-      {dataView !== 'none' && !viewsOpen && (
+      {dataView !== 'none' && dataView !== 'districts' && !viewsOpen && (
         <Animated.View entering={FadeIn} exiting={FadeOut} style={styles.legendWrap} pointerEvents="none">
           <Glass intensity={45} style={styles.legend}>
             <Text style={styles.legendTitle}>
               {current.icon} {current.label}
             </Text>
             <View style={styles.legendBar}>
-              {['#2ecc71', '#a3d65c', '#f1c40f', '#e67e22', '#e74c3c'].map((c) => (
+              {(colorblind ? HEAT_STOPS.colorblind : HEAT_STOPS.normal).map((c) => (
                 <View key={c} style={[styles.legendCell, { backgroundColor: c }]} />
               ))}
             </View>
@@ -119,6 +147,9 @@ const styles = StyleSheet.create({
   btn: { width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(255,255,255,0.1)' },
   btnActive: { backgroundColor: 'rgba(52,152,219,0.85)' },
   btnText: { color: theme.text, fontSize: 19, fontWeight: '800' },
+  badge: { position: 'absolute', top: -4, right: -6, minWidth: 18, height: 18, borderRadius: 9, paddingHorizontal: 4, backgroundColor: '#e74c3c', alignItems: 'center', justifyContent: 'center' },
+  badgeGold: { backgroundColor: '#b7950b', top: undefined, bottom: -4, right: -10 },
+  badgeText: { color: '#fff', fontSize: 10, fontWeight: '800' },
   sep: { height: 1, marginHorizontal: 6, backgroundColor: 'rgba(255,255,255,0.15)' },
   views: { position: 'absolute', right: 56, bottom: 0 },
   viewsGlass: { borderRadius: 16, overflow: 'hidden', padding: 6, gap: 2, borderWidth: StyleSheet.hairlineWidth, borderColor: theme.glassBorder },

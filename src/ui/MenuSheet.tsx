@@ -1,5 +1,5 @@
-import { useState, type ReactNode } from 'react';
-import { Pressable, ScrollView, StyleSheet, Switch, Text, useWindowDimensions, View } from 'react-native';
+import { useMemo, useState, type ReactNode } from 'react';
+import { Pressable, ScrollView, StyleSheet, Switch, TextInput, useWindowDimensions, View } from 'react-native';
 import Animated, { FadeIn, FadeOut, SlideInDown, SlideInRight, SlideOutDown, SlideOutRight } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -15,9 +15,16 @@ import {
   type FundingKey,
   type Taxes,
 } from '../sim/constants';
-import { DISASTER_LABELS, type DisasterKind } from '../sim/simulation';
-import type { Quality } from '../store/persistence';
-import { useGameStore } from '../store/useGameStore';
+import { Canvas, Picture } from '@shopify/react-native-skia';
+
+import type { SlotActions } from '../hooks/usePersistence';
+import { ADVISORS } from '../sim/advisors';
+import { computeDistrictStats } from '../sim/districts';
+import { DISASTER_LABELS, EVENT_LABELS, type DisasterKind } from '../sim/simulation';
+import { previewType, type Quality, type SlotMeta } from '../store/persistence';
+import { useGameStore, type MenuTab } from '../store/useGameStore';
+import { buildThumbPicture } from './MapThumb';
+import { Text } from './Text';
 import { formatDate, formatMoney, formatNumber, theme } from './theme';
 import { Glass } from './Glass';
 import { HistoryChart } from './HistoryChart';
@@ -25,11 +32,13 @@ import { HistoryChart } from './HistoryChart';
 /** À partir de cette largeur (tablette, paysage), le menu devient un panneau latéral. */
 export const WIDE_LAYOUT = 700;
 
-type Tab = 'city' | 'budget' | 'laws' | 'news' | 'charts' | 'settings';
-const TABS: { id: Tab; label: string }[] = [
+const TABS: { id: MenuTab; label: string }[] = [
+  { id: 'advisors', label: '💡 Conseillers' },
   { id: 'city', label: '🏙️ Ville' },
+  { id: 'districts', label: '🏘️ Quartiers' },
   { id: 'budget', label: '💰 Budget' },
   { id: 'laws', label: '📜 Lois' },
+  { id: 'events', label: '🎉 Événements' },
   { id: 'news', label: '📰 Journal' },
   { id: 'charts', label: '📈 Graphiques' },
   { id: 'settings', label: '⚙️ Réglages' },
@@ -95,17 +104,22 @@ function Stepper({ value, min, max, onChange, step, color, suffix }: { value: nu
 }
 
 /** Menu de la ville : statistiques, budget, ordonnances, journal, graphiques et réglages. */
-export function MenuSheet({ onClose, onSaveNow, lastSavedAt }: { onClose: () => void; onSaveNow: () => void; lastSavedAt: number | null }) {
+export function MenuSheet({ onSaveNow, lastSavedAt, slots }: { onSaveNow: () => void; lastSavedAt: number | null; slots: SlotActions }) {
   const insets = useSafeAreaInsets();
   const { width, height } = useWindowDimensions();
   const wide = width >= WIDE_LAYOUT;
-  const [tab, setTab] = useState<Tab>('city');
+  const tab = useGameStore((s) => s.menuTab) ?? 'city';
+  const setTab = useGameStore((s) => s.openMenu);
+  const cityName = useGameStore((s) => s.cityName);
+  const onClose = () => setTab(null);
 
   const body = (
     <Glass intensity={60} style={[styles.sheet, wide && styles.sheetWide]} tint="rgba(12,22,34,0.78)">
       {!wide && <View style={styles.grabber} />}
       <View style={styles.titleRow}>
-        <Text style={styles.title}>MiniCity</Text>
+        <Text style={styles.title} numberOfLines={1}>
+          {cityName}
+        </Text>
         <Pressable onPress={onClose} hitSlop={10} accessibilityLabel="Fermer le menu">
           <Text style={styles.close}>✕</Text>
         </Pressable>
@@ -122,12 +136,15 @@ export function MenuSheet({ onClose, onSaveNow, lastSavedAt }: { onClose: () => 
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
       >
+        {tab === 'advisors' && <AdvisorsTab />}
         {tab === 'city' && <CityTab />}
+        {tab === 'districts' && <DistrictsTab />}
+        {tab === 'events' && <EventsTab />}
         {tab === 'budget' && <BudgetTab />}
         {tab === 'laws' && <LawsTab />}
         {tab === 'news' && <NewsTab />}
         {tab === 'charts' && <ChartsTab />}
-        {tab === 'settings' && <SettingsTab onClose={onClose} onSaveNow={onSaveNow} lastSavedAt={lastSavedAt} />}
+        {tab === 'settings' && <SettingsTab onClose={onClose} onSaveNow={onSaveNow} lastSavedAt={lastSavedAt} slots={slots} />}
       </ScrollView>
     </Glass>
   );
@@ -184,6 +201,18 @@ function CityTab() {
         <Stat label="Bouchons" value={`${st.congestion} %`} color={st.congestion > 60 ? theme.negative : undefined} />
         <Stat label="Bus + métro" value={formatNumber(st.busRiders + st.metroRiders)} />
       </View>
+
+      <Text style={styles.section}>Énergie et industrie</Text>
+      <View style={styles.statsGrid}>
+        <Stat label="Production" value={`${formatNumber(st.power.supply)} MW`} />
+        <Stat label="Besoin" value={`${formatNumber(st.power.demand)} MW`} color={st.power.demand > st.power.served + 1 ? theme.negative : undefined} />
+        <Stat
+          label="Export"
+          value={st.exports.jobs ? `${Math.round((Math.min(st.exports.capacity, st.exports.connected) / st.exports.jobs) * 100)} %` : '—'}
+          color={st.exports.jobs && Math.min(st.exports.capacity, st.exports.connected) < st.exports.jobs * 0.9 ? theme.negative : undefined}
+        />
+      </View>
+      <Gauge icon="🔌" label="Charge du réseau" value={st.power.supply ? Math.min(100, Math.round((st.power.demand / st.power.supply) * 100)) : 0} color={st.power.demand > st.power.supply * 0.9 ? '#e74c3c' : '#f1c40f'} />
 
       <Text style={styles.section}>Services publics (bâtiments desservis)</Text>
       <Gauge icon="⚡" label="Électricité" value={powerPct} color="#f1c40f" />
@@ -336,7 +365,7 @@ const QUALITIES: { id: Quality; label: string }[] = [
   { id: 'low', label: 'Basse' },
 ];
 
-function SettingsTab({ onClose, onSaveNow, lastSavedAt }: { onClose: () => void; onSaveNow: () => void; lastSavedAt: number | null }) {
+function SettingsTab({ onClose, onSaveNow, lastSavedAt, slots }: { onClose: () => void; onSaveNow: () => void; lastSavedAt: number | null; slots: SlotActions }) {
   const settings = useGameStore((s) => s.settings);
   const setSetting = useGameStore((s) => s.setSetting);
   const speed = useGameStore((s) => s.speed);
@@ -346,15 +375,35 @@ function SettingsTab({ onClose, onSaveNow, lastSavedAt }: { onClose: () => void;
   const newCity = useGameStore((s) => s.newCity);
   const loadDemoCity = useGameStore((s) => s.loadDemoCity);
   const size = useGameStore((s) => s.gridSize);
-  const toggles: { key: 'music' | 'sounds' | 'showAgents' | 'dayNight'; label: string }[] = [
+  const cityName = useGameStore((s) => s.cityName);
+  const setCityName = useGameStore((s) => s.setCityName);
+  const [name, setName] = useState(cityName);
+  const toggles: { key: 'music' | 'sounds' | 'showAgents' | 'dayNight' | 'weather' | 'minimap'; label: string }[] = [
     { key: 'music', label: '🎵 Musique' },
     { key: 'sounds', label: '🔊 Effets sonores' },
     { key: 'showAgents', label: '🚗 Trafic et piétons' },
     { key: 'dayNight', label: '🌙 Cycle jour / nuit' },
+    { key: 'weather', label: '🌦️ Météo animée' },
+    { key: 'minimap', label: '🗺️ Mini-carte' },
   ];
 
   return (
     <>
+      <Text style={styles.section}>Ville</Text>
+      <View style={styles.row}>
+        <TextInput
+          value={name}
+          onChangeText={setName}
+          onEndEditing={() => setCityName(name)}
+          onBlur={() => setCityName(name)}
+          maxLength={24}
+          placeholder="Nom de la ville"
+          placeholderTextColor={theme.textDim}
+          style={styles.input}
+          accessibilityLabel="Nom de la ville"
+        />
+      </View>
+
       <Text style={styles.section}>Simulation</Text>
       <Row label="Vitesse">
         <Btn label={paused ? '▶︎' : '❚❚'} onPress={togglePause} selected={paused} />
@@ -362,6 +411,21 @@ function SettingsTab({ onClose, onSaveNow, lastSavedAt }: { onClose: () => void;
           <Btn key={sp} label={`${sp}×`} onPress={() => setSpeed(sp)} selected={!paused && speed === sp} />
         ))}
       </Row>
+
+      <Text style={styles.section}>Parties sauvegardées</Text>
+      {slots.slots.map((meta, i) => (
+        <SlotCard key={i} slot={i + 1} meta={meta} current={slots.current === i + 1} slots={slots} onClose={onClose} />
+      ))}
+      <View style={styles.actions}>
+        <Btn label="💾 Sauvegarder" onPress={() => { onSaveNow(); slots.refresh(); }} />
+        <Btn label="🏙️ Ville de démo" tone="primary" onPress={() => { loadDemoCity(); onClose(); }} />
+      </View>
+      <View style={styles.actions}>
+        {MAP_SIZES.map((n) => (
+          <Btn key={n} label={`🌱 Nouvelle ville ${n}×${n}`} tone="danger" onPress={() => { newCity(n); onClose(); }} />
+        ))}
+      </View>
+      <Text style={styles.hint}>« Nouvelle ville » remplace la partie de l’emplacement en cours.</Text>
 
       <Text style={styles.section}>Affichage et son</Text>
       {toggles.map((t) => (
@@ -376,25 +440,199 @@ function SettingsTab({ onClose, onSaveNow, lastSavedAt }: { onClose: () => void;
         ))}
       </View>
       <Text style={styles.hint}>En mode Auto, le nombre de véhicules s’adapte pour garder une animation fluide.</Text>
+
+      <Text style={styles.section}>Accessibilité</Text>
+      <Text style={styles.rowLabel}>🔠 Taille du texte</Text>
+      <View style={styles.actions}>
+        {[
+          { v: 1, l: 'Normale' },
+          { v: 1.15, l: 'Grande' },
+          { v: 1.3, l: 'Très grande' },
+        ].map((o) => (
+          <Btn key={o.v} small label={o.l} onPress={() => setSetting('textScale', o.v)} selected={settings.textScale === o.v} />
+        ))}
+      </View>
+      <Row label="🎨 Couleurs pour daltoniens">
+        <Switch value={settings.colorblind} onValueChange={(v) => setSetting('colorblind', v)} trackColor={{ true: theme.positive, false: 'rgba(255,255,255,0.2)' }} />
+      </Row>
+      <Row label="📳 Vibrations">
+        <Switch value={settings.haptics} onValueChange={(v) => setSetting('haptics', v)} trackColor={{ true: theme.positive, false: 'rgba(255,255,255,0.2)' }} />
+      </Row>
+      <Text style={styles.hint}>La palette daltonienne (bleu → orange) s’applique aux vues de données et à leur légende.</Text>
       <Row label="🎓 Tutoriel">
         <Btn small label="Recommencer" onPress={() => { setSetting('tutorial', 0); onClose(); }} />
       </Row>
-
-      <Text style={styles.section}>Partie</Text>
-      <View style={styles.actions}>
-        <Btn label="💾 Sauvegarder" onPress={onSaveNow} />
-        <Btn label="🏙️ Ville de démo" tone="primary" onPress={() => { loadDemoCity(); onClose(); }} />
-      </View>
-      <View style={styles.actions}>
-        {MAP_SIZES.map((n) => (
-          <Btn key={n} label={`🌱 Nouvelle ville ${n}×${n}`} tone="danger" onPress={() => { newCity(n); onClose(); }} />
-        ))}
-      </View>
       <Text style={styles.foot}>
         Carte actuelle {size}×{size}
         {size !== DEFAULT_MAP_SIZE ? '' : ' (grande)'} · 100 % hors ligne · sauvegarde auto toutes les 15 s
         {lastSavedAt ? ` · dernière à ${new Date(lastSavedAt).toTimeString().slice(0, 8)}` : ''}
       </Text>
+    </>
+  );
+}
+
+/** Carte d'un emplacement de sauvegarde : aperçu de la ville, population, date. */
+function SlotCard({ slot, meta, current, slots, onClose }: { slot: number; meta: SlotMeta | null; current: boolean; slots: SlotActions; onClose: () => void }) {
+  const thumb = useMemo(() => {
+    if (!meta) return null;
+    const n = meta.previewSize;
+    return buildThumbPicture(n, 96, (x, y) => previewType(meta.preview[y * n + x]));
+  }, [meta]);
+  return (
+    <View style={[styles.slot, current && styles.slotCurrent]}>
+      <View style={styles.slotThumb}>
+        {thumb ? (
+          <Canvas style={{ width: 96, height: 48 }}>
+            <Picture picture={thumb} />
+          </Canvas>
+        ) : (
+          <Text style={styles.slotEmpty}>vide</Text>
+        )}
+      </View>
+      <View style={{ flex: 1, gap: 2 }}>
+        <Text style={styles.rowLabel} numberOfLines={1}>
+          {slot}. {meta ? meta.cityName : 'Emplacement libre'}
+          {current ? '  ●' : ''}
+        </Text>
+        {meta && (
+          <Text style={styles.slotSub} numberOfLines={1}>
+            {formatNumber(meta.population)} hab. · {formatDate(meta.month)} · {formatMoney(meta.treasury)}
+          </Text>
+        )}
+        <View style={styles.slotActions}>
+          {!current && <Btn small label={meta ? '▶︎ Jouer' : '🌱 Commencer'} tone="primary" onPress={() => { slots.play(slot); onClose(); }} />}
+          {!current && <Btn small label="⤓ Copier ici" onPress={() => slots.saveAs(slot)} />}
+          {!current && meta && <Btn small label="🗑" tone="danger" onPress={() => slots.remove(slot)} />}
+          {current && <Text style={styles.slotSub}>Partie en cours</Text>}
+        </View>
+      </View>
+    </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Conseillers, quartiers, événements
+// ---------------------------------------------------------------------------
+
+const SEVERITY_COLORS = ['#5dade2', '#f1c40f', '#e67e22', '#e74c3c'];
+
+function AdvisorsTab() {
+  const advice = useGameStore((s) => s.advice);
+  const focusOn = useGameStore((s) => s.focusOn);
+  const setTool = useGameStore((s) => s.setTool);
+  const openMenu = useGameStore((s) => s.openMenu);
+  if (!advice.length) return <Text style={styles.hint}>Vos conseillers n’ont rien à signaler pour l’instant.</Text>;
+  return (
+    <>
+      {advice.map((a) => {
+        const who = ADVISORS[a.advisor];
+        return (
+          <View key={a.id} style={[styles.advice, { borderLeftColor: SEVERITY_COLORS[a.severity] }]}>
+            <View style={styles.adviceHead}>
+              <Text style={styles.adviceIcon}>{who.icon}</Text>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.adviceWho}>
+                  {who.name} · {who.role}
+                </Text>
+                <Text style={styles.adviceTitle}>{a.title}</Text>
+              </View>
+            </View>
+            <Text style={styles.adviceText}>{a.text}</Text>
+            {(a.target || a.tool) && (
+              <View style={styles.actions}>
+                {a.target && <Btn small label="📍 Voir sur la carte" onPress={() => focusOn(a.target!.x, a.target!.y, a.view)} />}
+                {a.tool && (
+                  <Btn
+                    small
+                    label="🛠️ Prendre l’outil"
+                    tone="primary"
+                    onPress={() => {
+                      setTool(a.tool!);
+                      if (a.target) focusOn(a.target.x, a.target.y);
+                      else openMenu(null);
+                    }}
+                  />
+                )}
+              </View>
+            )}
+          </View>
+        );
+      })}
+    </>
+  );
+}
+
+function DistrictsTab() {
+  const tiles = useGameStore((s) => s.tiles);
+  const size = useGameStore((s) => s.gridSize);
+  const analysis = useGameStore((s) => s.analysis);
+  const focusOn = useGameStore((s) => s.focusOn);
+  const list = useMemo(() => (analysis ? computeDistrictStats(tiles, size, analysis.maps, analysis.cov) : []), [tiles, size, analysis]);
+  if (!list.length) return <Text style={styles.hint}>Aucun quartier habité pour l’instant. Les quartiers apparaissent dès que l’on construit.</Text>;
+  return (
+    <>
+      <Text style={styles.hint}>Touchez un quartier pour le voir sur la carte (vue Satisfaction).</Text>
+      {list.map((d) => (
+        <Pressable key={d.id} onPress={() => focusOn(d.fx, d.fy, 'happiness')} style={({ pressed }) => [styles.district, pressed && { opacity: 0.7 }]}>
+          <View style={styles.districtHead}>
+            <Text style={styles.rowLabel}>🏘️ {d.name}</Text>
+            <Text style={styles.slotSub}>
+              {formatNumber(d.population)} hab. · {formatNumber(d.jobs)} emplois
+            </Text>
+          </View>
+          <Gauge icon="😊" label="Satisfaction" value={d.happiness} color={d.happiness >= 60 ? theme.positive : d.happiness >= 40 ? theme.i : theme.negative} />
+          <Gauge icon="🚨" label="Criminalité" value={d.crime} color="#e74c3c" />
+          <Gauge icon="🏭" label="Pollution" value={d.pollution} color="#a1887f" />
+          <Gauge icon="💎" label="Valeur foncière" value={d.value} color="#5dade2" />
+        </Pressable>
+      ))}
+    </>
+  );
+}
+
+function EventsTab() {
+  const cityEvents = useGameStore((s) => s.cityEvents);
+  const counters = useGameStore((s) => s.counters);
+  const tiles = useGameStore((s) => s.tiles);
+  const focusOn = useGameStore((s) => s.focusOn);
+  const venues = useMemo(() => {
+    const c = { STADIUM: 0, ARENA: 0, FAIR: 0, MARKET: 0 } as Record<string, number>;
+    for (const t of tiles) if (t.type in c) c[t.type]++;
+    return c;
+  }, [tiles]);
+  return (
+    <>
+      <Text style={styles.section}>Ce mois-ci</Text>
+      {cityEvents.length ? (
+        cityEvents.map((e, i) => (
+          <Pressable key={i} onPress={() => focusOn(e.x, e.y)} style={({ pressed }) => [styles.news, pressed && { opacity: 0.7 }]}>
+            <Text style={styles.newsIcon}>{EVENT_LABELS[e.kind].icon}</Text>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.newsText}>{EVENT_LABELS[e.kind].label}</Text>
+              <Text style={styles.newsDate}>
+                +{e.bonus} % de satisfaction · +{formatMoney(e.tourism)} de tourisme · 📍 voir
+              </Text>
+            </View>
+          </Pressable>
+        ))
+      ) : (
+        <Text style={styles.hint}>Aucun événement ce mois-ci.</Text>
+      )}
+
+      <Text style={styles.section}>Calendrier</Text>
+      <Text style={styles.calendar}>⚽ Matchs : presque chaque mois au stade ({venues.STADIUM})</Text>
+      <Text style={styles.calendar}>🎸 Concerts : régulièrement dans les salles de concert ({venues.ARENA})</Text>
+      <Text style={styles.calendar}>🎡 Festival d’été : juin à août à la fête foraine ({venues.FAIR})</Text>
+      <Text style={styles.calendar}>🧺 Jour de marché, 🎄 marché de Noël en décembre ({venues.MARKET} marché(s))</Text>
+      <Text style={styles.calendar}>🎆 Feu d’artifice du 14 juillet au-dessus du plus grand lieu</Text>
+      <Text style={styles.hint}>Touchez un lieu sur la carte (outil Explorer) pour organiser un événement supplémentaire.</Text>
+
+      <Text style={styles.section}>Bilan</Text>
+      <View style={styles.statsGrid}>
+        <Stat label="Événements" value={formatNumber(counters.events)} />
+        <Stat label="Matchs" value={formatNumber(counters.match)} />
+        <Stat label="Concerts" value={formatNumber(counters.concert)} />
+      </View>
     </>
   );
 }
@@ -483,4 +721,20 @@ const styles = StyleSheet.create({
   newsDate: { color: theme.textDim, fontSize: 11, fontWeight: '700' },
   newsText: { color: theme.text, fontSize: 14, lineHeight: 19 },
   foot: { color: theme.textDim, fontSize: 11, marginTop: 4 },
+  input: { flex: 1, color: theme.text, fontSize: 16, fontWeight: '700', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.1)' },
+  slot: { flexDirection: 'row', gap: 10, padding: 10, borderRadius: 14, backgroundColor: 'rgba(255,255,255,0.06)', alignItems: 'center' },
+  slotCurrent: { borderWidth: 1, borderColor: theme.positive },
+  slotThumb: { width: 96, height: 48, alignItems: 'center', justifyContent: 'center', borderRadius: 8, backgroundColor: 'rgba(0,0,0,0.25)' },
+  slotEmpty: { color: theme.textDim, fontSize: 12 },
+  slotSub: { color: theme.textDim, fontSize: 12 },
+  slotActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 4 },
+  advice: { padding: 12, borderRadius: 14, backgroundColor: 'rgba(255,255,255,0.06)', borderLeftWidth: 4, gap: 6 },
+  adviceHead: { flexDirection: 'row', gap: 10, alignItems: 'center' },
+  adviceIcon: { fontSize: 26 },
+  adviceWho: { color: theme.textDim, fontSize: 11, fontWeight: '700' },
+  adviceTitle: { color: theme.text, fontSize: 15, fontWeight: '800' },
+  adviceText: { color: theme.text, fontSize: 13, lineHeight: 18, opacity: 0.92 },
+  district: { padding: 12, borderRadius: 14, backgroundColor: 'rgba(255,255,255,0.06)', gap: 6 },
+  districtHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline', gap: 8 },
+  calendar: { color: theme.text, fontSize: 13, lineHeight: 19 },
 });

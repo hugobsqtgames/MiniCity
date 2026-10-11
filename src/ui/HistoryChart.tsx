@@ -1,7 +1,8 @@
 import { Canvas, Line, Path, Skia, vec } from '@shopify/react-native-skia';
 import { useMemo, useState } from 'react';
-import { StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native';
+import { StyleSheet, View, type LayoutChangeEvent } from 'react-native';
 
+import { Text } from './Text';
 import { formatNumber, theme } from './theme';
 
 const HEIGHT = 92;

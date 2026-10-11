@@ -1,6 +1,9 @@
 import {
-  isMonument,
+  isFacility,
+  isLogistics,
+  isPlant,
   isRoadType,
+  isVenue,
   isZone,
   MONUMENT_TYPES,
   SERVICE_TYPES,
@@ -8,12 +11,14 @@ import {
   type MonumentType,
   type ServiceType,
   type Tile,
+  type VenueType,
 } from '../engine/map';
 import {
   DEFAULT_FUNDING,
   DEFAULT_ORDINANCES,
   DEFAULT_TAX,
   DEFAULT_TAXES,
+  EXPORT_NEEDED_AT,
   fundingOf,
   GARBAGE_PER_LEVEL,
   INCOME_PER_CITIZEN,
@@ -21,16 +26,20 @@ import {
   JOBS_C,
   JOBS_I,
   LANDFILL_LIMIT,
+  LOGISTICS_CAPACITY,
   MONUMENT_RADIUS,
   MONUMENT_TOURISM,
   MONUMENT_UNLOCK,
   ORDINANCES,
+  PLANT_POLLUTION,
   RESIDENTS,
   ROAD_ACCESS_RANGE,
   ROAD_CAPACITY,
   SERVICE_RADIUS,
   STRIKE_BELOW,
+  seasonOf,
   UPKEEP,
+  VENUE_TOURISM,
   WASTE_CAPACITY,
   WORKFORCE_RATIO,
   type Funding,
@@ -38,7 +47,7 @@ import {
   type Ordinances,
   type Taxes,
 } from './constants';
-import { applyPower } from './power';
+import { applyPower, computeGrid } from './power';
 
 export type Demand = { r: number; c: number; i: number };
 
@@ -92,9 +101,87 @@ export type CityStats = {
   tourism: number;
   /** Services en grève (budget trop faible). */
   strikes: FundingKey[];
+  /** Électricité : production, besoin et consommation servie (MW). */
+  power: { supply: number; demand: number; served: number; outOfRange: number };
+  /** Industrie : emplois industriels et capacité d'export (port, gare de fret). */
+  exports: { jobs: number; capacity: number; connected: number };
+  /** Événements du mois (matchs, concerts, festivals…) : bonus de satisfaction. */
+  eventBonus: number;
 };
 
-export type DisasterKind = 'earthquake' | 'flood' | 'tornado' | 'blackout';
+export type Weather = 'clear' | 'cloudy' | 'rain' | 'storm' | 'fog' | 'snow' | 'heat';
+export const WEATHER_LABELS: Record<Weather, { icon: string; label: string }> = {
+  clear: { icon: '☀️', label: 'Beau temps' },
+  cloudy: { icon: '⛅', label: 'Nuageux' },
+  rain: { icon: '🌧️', label: 'Pluie' },
+  storm: { icon: '⛈️', label: 'Orage' },
+  fog: { icon: '🌫️', label: 'Brouillard' },
+  snow: { icon: '🌨️', label: 'Neige' },
+  heat: { icon: '🥵', label: 'Canicule' },
+};
+
+/** Météo du mois, tirée selon la saison. */
+export function rollWeather(month: number, random: () => number): Weather {
+  const r = random();
+  switch (seasonOf(month)) {
+    case 'winter':
+      return r < 0.45 ? 'snow' : r < 0.65 ? 'cloudy' : r < 0.8 ? 'fog' : 'clear';
+    case 'spring':
+      return r < 0.35 ? 'rain' : r < 0.5 ? 'cloudy' : r < 0.55 ? 'storm' : 'clear';
+    case 'summer':
+      return r < 0.25 ? 'heat' : r < 0.35 ? 'storm' : r < 0.45 ? 'cloudy' : 'clear';
+    default:
+      return r < 0.3 ? 'rain' : r < 0.5 ? 'fog' : r < 0.7 ? 'cloudy' : 'clear';
+  }
+}
+
+export type CityEventKind = 'match' | 'concert' | 'festival' | 'market' | 'christmas' | 'fireworks';
+export type CityEvent = { kind: CityEventKind; x: number; y: number; venue: VenueType | 'PARK'; bonus: number; tourism: number };
+export const EVENT_LABELS: Record<CityEventKind, { icon: string; label: string }> = {
+  match: { icon: '⚽', label: 'Match au stade' },
+  concert: { icon: '🎸', label: 'Concert' },
+  festival: { icon: '🎡', label: 'Festival d’été' },
+  market: { icon: '🧺', label: 'Jour de marché' },
+  christmas: { icon: '🎄', label: 'Marché de Noël' },
+  fireworks: { icon: '🎆', label: 'Feu d’artifice du 14 juillet' },
+};
+/** Coût d'un événement organisé à la main depuis la fiche d'un lieu. */
+export const EVENT_COST = 800;
+
+/**
+ * Programme des événements du mois : matchs, concerts, festivals l'été,
+ * marché de Noël en décembre, feu d'artifice en juillet. `forced` = lieux où
+ * le maire a organisé un événement.
+ */
+export function planEvents(tiles: Tile[], month: number, weather: Weather, random: () => number, forced: { x: number; y: number }[] = []): CityEvent[] {
+  const out: CityEvent[] = [];
+  const m = ((month % 12) + 12) % 12;
+  const wet = weather === 'rain' || weather === 'storm' || weather === 'snow';
+  const isForced = (t: Tile) => forced.some((f) => f.x === t.x && f.y === t.y);
+  let biggest: Tile | null = null;
+  for (const t of tiles) {
+    if (!isVenue(t.type) || !t.powered || t.flood > 0) continue;
+    const force = isForced(t);
+    const p = (base: number) => force || random() < base;
+    if (t.type === 'STADIUM' && p(0.5)) out.push({ kind: 'match', x: t.x, y: t.y, venue: 'STADIUM', bonus: 3, tourism: 450 });
+    else if (t.type === 'ARENA' && p(0.4)) out.push({ kind: 'concert', x: t.x, y: t.y, venue: 'ARENA', bonus: 2, tourism: 300 });
+    else if (t.type === 'FAIR' && p(m >= 5 && m <= 7 ? (wet ? 0.35 : 0.8) : 0.12))
+      out.push({ kind: 'festival', x: t.x, y: t.y, venue: 'FAIR', bonus: 3, tourism: 380 });
+    else if (t.type === 'MARKET') {
+      if (m === 11) out.push({ kind: 'christmas', x: t.x, y: t.y, venue: 'MARKET', bonus: 4, tourism: 420 });
+      else if (p(0.35)) out.push({ kind: 'market', x: t.x, y: t.y, venue: 'MARKET', bonus: 1, tourism: 90 });
+    }
+    if (!biggest || (t.type === 'STADIUM' && biggest.type !== 'STADIUM')) biggest = t;
+  }
+  // Feu d'artifice du 14 juillet, au-dessus du plus grand lieu (ou d'un parc).
+  if (m === 6) {
+    const spot = biggest ?? tiles.find((t) => t.type === 'PARK');
+    if (spot) out.push({ kind: 'fireworks', x: spot.x, y: spot.y, venue: biggest ? (biggest.type as VenueType) : 'PARK', bonus: 3, tourism: 200 });
+  }
+  return out;
+}
+
+export type DisasterKind = 'earthquake' | 'flood' | 'tornado' | 'blackout' | 'meltdown';
 export type DisasterEvent = { kind: DisasterKind; x: number; y: number; path?: [number, number][]; damage: number };
 
 export type NewsItem = { icon: string; text: string };
@@ -103,6 +190,8 @@ export type SimEvents = {
   newFires: number;
   destroyed: number;
   extinguished: number;
+  /** Bâtiments reconstruits sur un terrain sinistré. */
+  rebuilt: number;
   disasters: DisasterEvent[];
   news: NewsItem[];
 };
@@ -120,6 +209,10 @@ export type SimInput = {
   trigger?: DisasterKind | null;
   /** Générateur aléatoire injectable (tests déterministes). */
   random?: () => number;
+  /** Mois simulé (pour la saison, la météo et les événements). */
+  month?: number;
+  /** Lieux où le maire a organisé un événement ce mois-ci. */
+  forcedEvents?: { x: number; y: number }[];
 };
 
 export type SimOutput = {
@@ -131,6 +224,10 @@ export type SimOutput = {
   income: number;
   expenses: number;
   events: SimEvents;
+  weather: Weather;
+  cityEvents: CityEvent[];
+  /** Analyse de fin de mois (pour les conseillers et les quartiers). */
+  analysis: Analysis;
 };
 
 /** Nombre maximal de bâtiments qui évoluent par mois : la ville pousse progressivement. */
@@ -182,7 +279,7 @@ export function computeCoverage(tiles: Tile[], size: number, funding: Funding = 
     }
   };
   for (const t of tiles) {
-    if (t.flood > 0) continue;
+    if (t.flood > 0 || t.rad > 0) continue;
     if (t.type === 'UNIVERSITY' && t.powered) {
       stamp(cov.SCHOOL, t.x, t.y, MONUMENT_RADIUS.UNIVERSITY, fundingFactor(funding, 'education'));
       continue;
@@ -303,6 +400,10 @@ export type TrafficResult = {
   commute: Float32Array;
   /** Part des actifs sans emploi accessible par la route, par tuile résidentielle. */
   jobless: Float32Array;
+  /** Chemins : prochaine tuile de route vers l'emploi le plus proche (= elle-même à l'arrivée). */
+  parent: Int32Array;
+  /** Quartiers résidentiels : tuile, route d'accès, actifs en voiture. */
+  homes: { idx: number; road: number; workers: number }[];
 };
 
 /**
@@ -380,7 +481,7 @@ export function computeTraffic(tiles: Tile[], size: number, transit: Float32Arra
     }
     commute[h.idx] = time;
   }
-  return { congestion, commute, jobless };
+  return { congestion, commute, jobless, parent, homes };
 }
 
 /** Pollution émise par l'industrie, les centrales, l'incinérateur, l'aéroport et les bouchons. */
@@ -405,7 +506,8 @@ export function computePollution(
   };
   for (const t of tiles) {
     if (t.type === 'I' && t.density > 0) emit(t.x, t.y, 7 * t.density, 5);
-    else if (t.type === 'POWER' && t.flood === 0) emit(t.x, t.y, ordinances.energy ? 14 : 22, 6);
+    else if (isPlant(t.type) && t.flood === 0 && PLANT_POLLUTION[t.type] > 0) emit(t.x, t.y, PLANT_POLLUTION[t.type] * (ordinances.energy ? 0.65 : 1), 6);
+    else if (t.type === 'PORT') emit(t.x, t.y, 9, 4);
     else if (t.type === 'INCINERATOR' && t.powered) emit(t.x, t.y, 18, 6);
     else if (t.type === 'AIRPORT') emit(t.x, t.y, 14, 7);
     else if (congestion && isRoadType(t.type)) {
@@ -445,19 +547,70 @@ function transitShares(tiles: Tile[], cov: Coverage, ordinances: Ordinances): Fl
   return share;
 }
 
-type Analysis = {
+export type Analysis = {
   stats: CityStats;
   maps: CityMaps;
   cov: Coverage;
   traffic: TrafficResult;
   transit: Float32Array;
   pollution: Float32Array;
+  /** Tuiles industrielles reliées par la route à un port ou une gare de fret. */
+  exportOk: Uint8Array;
 };
 
+/**
+ * Export industriel : les usines doivent être reliées par la route (même réseau
+ * routier) à un port ou une gare de fret, dont la capacité est limitée.
+ */
+function computeExports(tiles: Tile[], size: number, transportF: number) {
+  const n = tiles.length;
+  const comp = new Int32Array(n).fill(-1);
+  let id = 0;
+  const stack: number[] = [];
+  for (let i = 0; i < n; i++) {
+    if (comp[i] >= 0 || !isRoadType(tiles[i].type)) continue;
+    comp[i] = id;
+    stack.push(i);
+    while (stack.length) {
+      const j = stack.pop()!;
+      for (const nb of neighbours4(j, size, n)) {
+        if (nb < 0 || comp[nb] >= 0 || !isRoadType(tiles[nb].type)) continue;
+        comp[nb] = id;
+        stack.push(nb);
+      }
+    }
+    id++;
+  }
+  const hubs = new Set<number>();
+  let capacity = 0;
+  for (let i = 0; i < n; i++) {
+    const t = tiles[i];
+    if (!isLogistics(t.type) || !t.powered || t.flood > 0) continue;
+    capacity += LOGISTICS_CAPACITY[t.type] * transportF;
+    for (const nb of neighbours4(i, size, n)) if (nb >= 0 && comp[nb] >= 0) hubs.add(comp[nb]);
+  }
+  const ok = new Uint8Array(n);
+  let jobs = 0;
+  let connected = 0;
+  for (let i = 0; i < n; i++) {
+    const t = tiles[i];
+    if (t.type !== 'I') continue;
+    const r = accessRoad(tiles, size, t);
+    if (r >= 0 && hubs.has(comp[r])) {
+      ok[i] = 1;
+      if (t.density > 0) connected += JOBS_I[t.density];
+    }
+    if (t.density > 0) jobs += JOBS_I[t.density];
+  }
+  return { ok, jobs, capacity: Math.round(capacity), connected };
+}
+
 /** Analyse complète de la ville (statistiques + cartes), sans la faire évoluer. */
-export function analyzeCity(tiles: Tile[], size: number, policy: Policy = DEFAULT_POLICY): Analysis {
+export function analyzeCity(tiles: Tile[], size: number, policy: Policy = DEFAULT_POLICY, month = 3, cityEvents: CityEvent[] = []): Analysis {
   const { funding, ordinances, taxes } = policy;
   const cov = computeCoverage(tiles, size, funding);
+  const grid = computeGrid(tiles, size, month);
+  const exp = computeExports(tiles, size, fundingFactor(funding, 'transport'));
   const transit = transitShares(tiles, cov, ordinances);
   const traffic = computeTraffic(tiles, size, transit);
   const pollution = computePollution(tiles, size, ordinances, traffic.congestion);
@@ -489,10 +642,8 @@ export function analyzeCity(tiles: Tile[], size: number, policy: Policy = DEFAUL
     const t = tiles[i];
     if (t.fire > 0) fires++;
     if (isRoadType(t.type)) roads++;
-    else if (t.type === 'POWER') plants++;
-    else if (!isZone(t.type) && t.type !== 'GRASS' && t.type !== 'DIRT' && t.type !== 'LAKE' && t.type !== 'SAND' && t.type !== 'FOREST') {
-      services++;
-    }
+    else if (isPlant(t.type)) plants++;
+    else if (isFacility(t.type)) services++;
     if (!isZone(t.type)) continue;
     zones++;
     if (t.powered) poweredZones++;
@@ -561,7 +712,16 @@ export function analyzeCity(tiles: Tile[], size: number, policy: Policy = DEFAUL
   const garbage = built > 0 ? Math.round((garbageSum / built / 9) * 100) : 0;
 
   const monuments = MONUMENT_TYPES.filter((m) => tiles.some((t) => t.type === m && t.powered));
-  const tourism = Math.round(monuments.reduce((s, m) => s + MONUMENT_TOURISM[m], 0) * (population > 0 ? 1 : 0));
+  let venueTourism = 0;
+  let stadiums = 0;
+  for (const t of tiles) {
+    if (!isVenue(t.type) || !t.powered) continue;
+    venueTourism += VENUE_TOURISM[t.type];
+    if (t.type === 'STADIUM') stadiums++;
+  }
+  const eventTourism = cityEvents.reduce((s, e) => s + e.tourism, 0);
+  const eventBonus = Math.min(10, cityEvents.reduce((s, e) => s + e.bonus, 0));
+  const tourism = Math.round((monuments.reduce((s, m) => s + MONUMENT_TOURISM[m], 0) + venueTourism + eventTourism) * (population > 0 ? 1 : 0));
   const landfills = tiles.filter((t) => t.type === 'LANDFILL');
   const landfill = landfills.length ? Math.round((landfills.reduce((s, t) => s + t.garbage, 0) / (landfills.length * 9)) * 100) : 0;
   const strikes = (Object.keys(funding) as FundingKey[]).filter((k) => funding[k] < STRIKE_BELOW);
@@ -591,8 +751,10 @@ export function analyzeCity(tiles: Tile[], size: number, policy: Policy = DEFAUL
               strikes.length * 4 +
               (ordinances.smoking ? 3 : 0) -
               (ordinances.curfew ? 6 : 0) +
-              (monuments.includes('STADIUM') ? 6 : 0) +
-              (monuments.includes('LANDMARK') ? 3 : 0),
+              Math.min(6, stadiums * 4) +
+              (monuments.includes('LANDMARK') ? 3 : 0) +
+              eventBonus -
+              (grid.demand > grid.served + 1 && population > 0 ? Math.min(8, ((grid.demand - grid.served) / grid.demand) * 20) : 0),
             0,
             100,
           ),
@@ -625,17 +787,22 @@ export function analyzeCity(tiles: Tile[], size: number, policy: Policy = DEFAUL
       landfill,
       tourism,
       strikes,
+      power: { supply: grid.supply, demand: grid.demand, served: grid.served, outOfRange: grid.outOfRange },
+      exports: { jobs: exp.jobs, capacity: exp.capacity, connected: exp.connected },
+      eventBonus,
     },
     maps: { traffic: traffic.congestion, pollution, crime: crimeMap },
     cov,
     traffic,
     transit,
     pollution,
+    exportOk: exp.ok,
   };
 }
 
 /** Statistiques seules (compatibilité). */
 export function computeStats(tiles: Tile[], size: number, taxRate = DEFAULT_TAX, policy?: Policy): CityStats {
+  // (mois par défaut : printemps)
   return analyzeCity(tiles, size, policy ?? policyOf({ taxRate })).stats;
 }
 
@@ -661,8 +828,15 @@ export function computeDemand(stats: CityStats, taxes: Taxes | number, ordinance
         (ordinances.smoking ? 0.08 : 0) +
         (stats.tourism > 0 ? 0.05 : 0),
     ),
-    i: clamp((stats.population * 0.38 - stats.jobsI + 40) / (stats.jobsI * 0.5 + 50) - (tx.I - DEFAULT_TAX) * 0.05 + airport * 0.6),
+    i: clamp((stats.population * 0.38 - stats.jobsI + 40) / (stats.jobsI * 0.5 + 50) - (tx.I - DEFAULT_TAX) * 0.05 + airport * 0.6 - exportPenalty(stats)),
   };
+}
+
+/** Une grande ville dont l'industrie ne peut pas exporter voit la demande industrielle chuter. */
+export function exportPenalty(stats: CityStats): number {
+  if (!stats.exports || stats.population < EXPORT_NEEDED_AT || stats.exports.jobs === 0) return 0;
+  const shortage = 1 - Math.min(1, Math.min(stats.exports.capacity, stats.exports.connected) / stats.exports.jobs);
+  return shortage * 0.6;
 }
 
 /** Valeur foncière / attractivité d'une tuile (0-100). */
@@ -715,7 +889,8 @@ function landValue(tiles: Tile[], size: number, t: Tile, idx: number, hasRoad: b
   return Math.round(clamp(v, 0, 100));
 }
 
-function maxDensity(t: Tile, value: number, population: number): number {
+function maxDensity(t: Tile, value: number, population: number, exportOk = true): number {
+  if (t.rad > 0) return 0;
   // Sans eau courante, impossible de dépasser le niveau 1.
   if (!t.water) return 1;
   switch (t.type) {
@@ -724,6 +899,8 @@ function maxDensity(t: Tile, value: number, population: number): number {
     case 'C':
       return value >= 55 && population > 800 ? 3 : population > 150 ? 2 : 1;
     case 'I':
+      // Une usine qui ne peut pas exporter reste un petit atelier.
+      if (!exportOk && population >= EXPORT_NEEDED_AT) return 1;
       return population > 1200 ? 3 : population > 250 ? 2 : 1;
     default:
       return 0;
@@ -734,10 +911,14 @@ function maxDensity(t: Tile, value: number, population: number): number {
 // Catastrophes
 // ---------------------------------------------------------------------------
 
+/** Détruit une tuile. Une zone garde son zonage : le quartier se reconstruira tout seul. */
 const destroyTile = (t: Tile): Tile =>
-  t.lake ? { ...t, type: 'LAKE', density: 0, fire: 0, garbage: 0, flood: 0 } : { ...t, type: 'DIRT', density: 0, fire: 0, garbage: 0, flood: 0 };
-const destructible = (t: Tile) =>
-  (isZone(t.type) && t.density > 0) || t.type === 'POWER' || (SERVICE_TYPES as string[]).includes(t.type) || isMonument(t.type) || isRoadType(t.type);
+  t.lake
+    ? { ...t, type: 'LAKE', density: 0, fire: 0, garbage: 0, flood: 0 }
+    : isZone(t.type)
+      ? { ...t, density: 0, fire: 0, garbage: 0, value: -1 }
+      : { ...t, type: 'DIRT', density: 0, fire: 0, garbage: 0, flood: 0 };
+const destructible = (t: Tile) => (isZone(t.type) && t.density > 0) || isFacility(t.type) || isRoadType(t.type);
 
 function earthquake(out: Tile[], size: number, random: () => number): DisasterEvent {
   const x = Math.floor(random() * size);
@@ -803,8 +984,25 @@ function flood(out: Tile[], size: number, random: () => number): DisasterEvent |
   return { kind: 'flood', x: c.x, y: c.y, damage };
 }
 
+function meltdown(out: Tile[], size: number, random: () => number): DisasterEvent | null {
+  const plants = out.filter((t) => t.type === 'NUCLEAR');
+  if (!plants.length) return null;
+  const c = plants[Math.floor(random() * plants.length)];
+  let damage = 0;
+  for (let i = 0; i < out.length; i++) {
+    const t = out[i];
+    const d = Math.hypot(t.x - c.x, t.y - c.y);
+    if (d > 7 || t.type === 'LAKE') continue;
+    const rad = Math.max(1, Math.round(9 - d));
+    if (t === c) out[i] = { ...t, type: 'DIRT', density: 0, fire: 0, flood: 0, rad: 9 };
+    else out[i] = { ...t, rad: Math.max(t.rad, rad), density: isZone(t.type) ? 0 : t.density, fire: 0 };
+    damage++;
+  }
+  return { kind: 'meltdown', x: c.x, y: c.y, damage };
+}
+
 function blackout(out: Tile[], random: () => number): DisasterEvent | null {
-  const plants = out.map((t, i) => [t, i] as const).filter(([t]) => t.type === 'POWER' && t.flood === 0);
+  const plants = out.map((t, i) => [t, i] as const).filter(([t]) => (t.type === 'POWER' || t.type === 'NUCLEAR') && t.flood === 0);
   if (!plants.length) return null;
   const [t, i] = plants[Math.floor(random() * plants.length)];
   out[i] = { ...t, flood: 3 };
@@ -816,6 +1014,7 @@ export const DISASTER_LABELS: Record<DisasterKind, { icon: string; label: string
   flood: { icon: '🌊', label: 'Inondation' },
   tornado: { icon: '🌪️', label: 'Tornade' },
   blackout: { icon: '⚡', label: 'Panne de centrale' },
+  meltdown: { icon: '☢️', label: 'Accident nucléaire' },
 };
 
 // ---------------------------------------------------------------------------
@@ -828,11 +1027,18 @@ export function simulateMonth(input: SimInput): SimOutput {
   const policy = policyOf(input);
   const { taxes, funding, ordinances } = policy;
   const random = input.random ?? Math.random;
-  const events: SimEvents = { newFires: 0, destroyed: 0, extinguished: 0, disasters: [], news: [] };
+  const events: SimEvents = { newFires: 0, destroyed: 0, extinguished: 0, rebuilt: 0, disasters: [], news: [] };
+  const month = input.month ?? 3;
+  const season = seasonOf(month);
+  const weather = rollWeather(month, random);
+  const transportF = fundingFactor(funding, 'transport');
+  // Neige : sans chasse-neige (budget transports ≥ 80 %), la ville est paralysée.
+  const snowJam = weather === 'snow' && funding.transport < 80;
 
   // 1. Réseaux (au cas où la carte aurait changé depuis le dernier tick).
-  let tiles = applyPower(input.tiles, size);
-  const before = analyzeCity(tiles, size, policy);
+  let tiles = applyPower(input.tiles, size, month);
+  const before = analyzeCity(tiles, size, policy, month);
+  const cityEvents = planEvents(tiles, month, weather, random, input.forcedEvents);
   const monumentsBefore = MONUMENT_TYPES.filter((m) => tiles.some((t) => t.type === m && t.powered));
 
   // 2. Demande RCI, lissée pour éviter que les jauges ne sautent.
@@ -873,6 +1079,13 @@ export function simulateMonth(input: SimInput): SimOutput {
     const idx = (start + k) % n;
     let t = out[idx];
 
+    // Contamination : les zones restent vides, la radioactivité baisse d'un cran par an.
+    if (t.rad > 0) {
+      if (month % 12 === 0) out[idx] = { ...t, rad: t.rad - 1, density: 0 };
+      else if (t.density > 0) out[idx] = { ...t, density: 0 };
+      continue;
+    }
+
     // Hors service (inondation, panne) : décompte des mois restants.
     if (t.flood > 0) {
       t = { ...t, flood: t.flood - 1, density: isZone(t.type) && t.density > 0 && random() < 0.15 ? t.density - 1 : t.density };
@@ -888,7 +1101,9 @@ export function simulateMonth(input: SimInput): SimOutput {
         out[idx] = { ...t, fire: 0 };
         events.extinguished++;
       } else if (t.fire + 1 >= FIRE_DESTROY_MONTHS) {
-        out[idx] = { ...t, type: 'DIRT', density: 0, fire: 0, powered: false, water: false, value: 0, garbage: 0 };
+        // Le bâtiment brûle, mais la parcelle reste zonée : il sera reconstruit.
+        // (valeur -1 = parcelle sinistrée, à reconstruire en priorité)
+        out[idx] = { ...t, density: 0, fire: 0, value: -1, garbage: 0 };
         events.destroyed++;
       } else {
         out[idx] = { ...t, fire: t.fire + 1 };
@@ -918,7 +1133,8 @@ export function simulateMonth(input: SimInput): SimOutput {
     } else garbage = 0;
 
     if (density > 0) {
-      const risk = 0.00022 * density * (t.type === 'I' ? 3 : t.type === 'C' ? 1.5 : 1) * (1 - 0.85 * fireF(idx));
+      const climate = weather === 'heat' ? 2.5 : weather === 'rain' || weather === 'snow' ? 0.4 : weather === 'storm' ? 1.5 : 1;
+      const risk = 0.00022 * density * climate * (t.type === 'I' ? 3 : t.type === 'C' ? 1.5 : 1) * (1 - 0.85 * fireF(idx));
       if (random() < risk) {
         fire = 1;
         events.newFires++;
@@ -928,9 +1144,14 @@ export function simulateMonth(input: SimInput): SimOutput {
     if (!fire && changes < MAX_CHANGES_PER_TICK) {
       const d = t.type === 'R' ? demand.r : t.type === 'C' ? demand.c : demand.i;
       const canGrow = hasRoad && t.powered && garbage < 7;
-      const cap = maxDensity(t, value, before.stats.population);
-      if (canGrow && d > 0 && density < cap) {
-        if (random() < d * 0.18 * (0.5 + value / 100)) density++;
+      const cap = maxDensity(t, value, before.stats.population, before.exportOk[idx] === 1);
+      // Une parcelle sinistrée (déjà bâtie avant) se reconstruit en priorité.
+      const ruined = density === 0 && t.value < 0 && d > -0.3;
+      if (canGrow && (d > 0 || ruined) && density < cap) {
+        if (random() < (ruined ? 0.35 : d * 0.18 * (0.5 + value / 100))) {
+          if (ruined) events.rebuilt++;
+          density++;
+        }
       } else if (density > 0 && !canGrow) {
         if (random() < 0.05) density--; // abandon faute de courant, de route ou à cause des ordures
       } else if (density > cap) {
@@ -940,9 +1161,11 @@ export function simulateMonth(input: SimInput): SimOutput {
       }
     }
 
-    if (density !== t.density || value !== t.value || fire !== t.fire || garbage !== t.garbage) {
+    // La parcelle reste marquée « sinistrée » tant qu'elle n'est pas reconstruite.
+    const nextValue = t.value < 0 && density === 0 ? -1 : value;
+    if (density !== t.density || nextValue !== t.value || fire !== t.fire || garbage !== t.garbage) {
       if (density !== t.density) changes++;
-      out[idx] = { ...t, density, value, fire, garbage };
+      out[idx] = { ...t, density, value: nextValue, fire, garbage };
     }
   }
 
@@ -970,21 +1193,29 @@ export function simulateMonth(input: SimInput): SimOutput {
     if (roll(0.004)) kinds.push('tornado');
     if (roll(0.006)) kinds.push('flood');
     if (roll(0.006)) kinds.push('blackout');
+    if (roll(0.0015)) kinds.push('meltdown');
+    // Les orages favorisent les inondations.
+    if (weather === 'storm' && roll(0.03)) kinds.push('flood');
   }
   for (const kind of kinds) {
     const ev =
-      kind === 'earthquake' ? earthquake(out, size, random) : kind === 'tornado' ? tornado(out, size, random) : kind === 'flood' ? flood(out, size, random) : blackout(out, random);
+      kind === 'earthquake' ? earthquake(out, size, random) : kind === 'tornado' ? tornado(out, size, random) : kind === 'flood' ? flood(out, size, random) : kind === 'meltdown' ? meltdown(out, size, random) : blackout(out, random);
     if (!ev) continue;
     events.disasters.push(ev);
     const L = DISASTER_LABELS[kind];
     events.news.push({ icon: L.icon, text: `${L.label} ! ${ev.damage} tuile(s) touchée(s) près de (${ev.x}, ${ev.y}).` });
   }
 
-  tiles = applyPower(out, size);
+  tiles = applyPower(out, size, month);
 
   // 6. Budget : impôts R/C/I + tourisme − entretien (au prorata du budget) − ordonnances.
-  const after = analyzeCity(tiles, size, policy);
+  const after = analyzeCity(tiles, size, policy, month, cityEvents);
   const stats = after.stats;
+  if (snowJam && stats.population > 0) {
+    stats.happiness = Math.max(0, stats.happiness - 5);
+    stats.commute = Math.round(stats.commute * 13) / 10;
+  }
+  if (weather === 'heat' && stats.population > 0) stats.happiness = Math.max(0, stats.happiness - 2);
   const taxIncome =
     stats.population * (taxes.R / 100) * INCOME_PER_CITIZEN +
     (stats.jobsC * (taxes.C / 100) + stats.jobsI * (taxes.I / 100)) * INCOME_PER_JOB;
@@ -996,8 +1227,11 @@ export function simulateMonth(input: SimInput): SimOutput {
     const base = UPKEEP[t.type] ?? 0;
     if (!base) continue;
     const key = fundingOf(t.type);
-    expenses += base * (key ? funding[key] / 100 : 1);
+    // L'hiver, chauffer les bâtiments publics coûte plus cher.
+    const heating = season === 'winter' && key === 'utilities' ? 1.2 : 1;
+    expenses += base * heating * (key ? funding[key] / 100 : 1);
   }
+  void transportF;
   expenses = Math.round(expenses + Math.max(0, ordinanceCost));
 
   // 7. Journal : paliers de population, monuments débloqués, alertes.
@@ -1009,6 +1243,11 @@ export function simulateMonth(input: SimInput): SimOutput {
   }
   if (events.newFires > 0) events.news.push({ icon: '🔥', text: `Incendie signalé (${events.newFires} foyer${events.newFires > 1 ? 's' : ''}).` });
   if (events.destroyed > 0) events.news.push({ icon: '💥', text: `${events.destroyed} bâtiment(s) détruit(s) par le feu.` });
+  if (events.rebuilt > 0) events.news.push({ icon: '🏗️', text: `Reconstruction : ${events.rebuilt} bâtiment(s) relevé(s).` });
+  for (const e of cityEvents) events.news.push({ icon: EVENT_LABELS[e.kind].icon, text: `${EVENT_LABELS[e.kind].label} : +${e.tourism} $ de tourisme.` });
+  if (snowJam) events.news.push({ icon: '🌨️', text: 'Routes enneigées : sans chasse-neige (budget transports ≥ 80 %), la ville tourne au ralenti.' });
+  if (weather === 'heat') events.news.push({ icon: '🥵', text: 'Canicule : risque d’incendie élevé.' });
+  if (stats.power.demand > stats.power.served + 1 && stats.power.supply > 0) events.news.push({ icon: '🔌', text: `Délestage : ${stats.power.demand - stats.power.served} MW non servis. Construisez des centrales.` });
   for (const s of stats.strikes) if (!before.stats.strikes.includes(s) || random() < 0.1) events.news.push({ icon: '✊', text: `Grève : ${STRIKE_TEXT[s]}` });
 
   return {
@@ -1020,11 +1259,13 @@ export function simulateMonth(input: SimInput): SimOutput {
     expenses,
     treasury: input.treasury + income - expenses,
     events,
+    weather,
+    cityEvents,
+    analysis: after,
   };
 }
 
 export const MONUMENT_NAMES: Record<MonumentType, string> = {
-  STADIUM: 'Stade',
   UNIVERSITY: 'Université',
   AIRPORT: 'Aéroport',
   LANDMARK: 'Tour emblématique',

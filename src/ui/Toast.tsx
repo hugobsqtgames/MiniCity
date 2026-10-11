@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
-import { StyleSheet, Text } from 'react-native';
+import { StyleSheet } from 'react-native';
 import Animated, { FadeInUp, FadeOutUp } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useGameStore } from '../store/useGameStore';
+import { Text } from './Text';
 import { HUD_HEIGHT } from './Hud';
 
 /** Message éphémère sous le HUD (fonds insuffisants, terrain occupé…). */

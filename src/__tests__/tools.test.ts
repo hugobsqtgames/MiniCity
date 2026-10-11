@@ -47,12 +47,12 @@ describe('outils de construction', () => {
 
   it('les monuments sont débloqués par la population, en un seul exemplaire', () => {
     const tiles = createEmptyMap(SIZE);
-    const poor = applyTool(tiles, SIZE, 'stadium', 1, 1, { funds: 1e9, population: MONUMENT_UNLOCK.STADIUM - 1 });
+    const poor = applyTool(tiles, SIZE, 'landmark', 1, 1, { funds: 1e9, population: MONUMENT_UNLOCK.LANDMARK - 1 });
     expect(poor.ok).toBe(false);
-    const ok = applyTool(tiles, SIZE, 'stadium', 1, 1, { funds: 1e9, population: MONUMENT_UNLOCK.STADIUM });
+    const ok = applyTool(tiles, SIZE, 'landmark', 1, 1, { funds: 1e9, population: MONUMENT_UNLOCK.LANDMARK });
     expect(ok.ok).toBe(true);
     if (!ok.ok) return;
-    expect(applyTool(ok.tiles, SIZE, 'stadium', 4, 4, rich).ok).toBe(false);
+    expect(applyTool(ok.tiles, SIZE, 'landmark', 4, 4, rich).ok).toBe(false);
   });
 
   it('refuse sans fonds suffisants', () => {

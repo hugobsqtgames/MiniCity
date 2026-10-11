@@ -35,6 +35,7 @@ const visuallyEqual = (a: Tile, b: Tile) =>
     a.fire === b.fire &&
     a.lake === b.lake &&
     (a.flood > 0) === (b.flood > 0) &&
+    a.rad === b.rad &&
     (a.garbage >= 5) === (b.garbage >= 5) &&
     (a.type !== 'LANDFILL' || a.garbage === b.garbage));
 

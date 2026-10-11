@@ -1,8 +1,9 @@
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, View } from 'react-native';
 import Animated, { FadeInDown, FadeOutDown } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useGameStore } from '../store/useGameStore';
+import { Text } from './Text';
 import { Glass } from './Glass';
 import { TOOLBAR_HEIGHT } from './Toolbar';
 import { theme } from './theme';

@@ -1,12 +1,15 @@
 import { useMemo } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, View } from 'react-native';
 import Animated, { FadeInDown, FadeOutDown } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { isMonument, isRoadType, isZone, tileIndex, type TileType } from '../engine/map';
-import { JOBS_C, JOBS_I, MONUMENT_TOURISM, MONUMENT_UNLOCK, RESIDENTS, ROAD_CAPACITY, UPKEEP } from '../sim/constants';
-import { computeCoverage, computeRoadAccess } from '../sim/simulation';
+import { isLogistics, isMonument, isPlant, isRoadType, isVenue, isZone, tileIndex, type TileType } from '../engine/map';
+import { JOBS_C, JOBS_I, LOGISTICS_CAPACITY, MONUMENT_TOURISM, MONUMENT_UNLOCK, PLANT_OUTPUT, RESIDENTS, ROAD_CAPACITY, UPKEEP, VENUE_TOURISM } from '../sim/constants';
+import { districtAt } from '../sim/districts';
+import { plantFactor, powerUse } from '../sim/power';
+import { computeCoverage, computeRoadAccess, EVENT_COST, EVENT_LABELS, type CityEventKind } from '../sim/simulation';
 import { useGameStore } from '../store/useGameStore';
+import { Text } from './Text';
 import { TOOLBAR_HEIGHT } from './Toolbar';
 import { formatMoney, formatNumber, theme } from './theme';
 import { Glass } from './Glass';
@@ -23,7 +26,15 @@ const NAMES: Record<TileType, string> = {
   R: 'Zone résidentielle',
   C: 'Zone commerciale',
   I: 'Zone industrielle',
-  POWER: 'Centrale électrique',
+  POWER: 'Centrale à charbon',
+  WIND: 'Éolienne',
+  SOLAR: 'Centrale solaire',
+  NUCLEAR: 'Centrale nucléaire',
+  PORT: 'Port de commerce',
+  FREIGHT: 'Gare de fret',
+  MARKET: 'Marché',
+  FAIR: 'Fête foraine',
+  ARENA: 'Salle de concert',
   POLICE: 'Commissariat',
   FIRE: 'Caserne de pompiers',
   HOSPITAL: 'Hôpital',
@@ -60,6 +71,18 @@ const MONUMENT_TEXT: Partial<Record<TileType, string>> = {
   AIRPORT: 'Attire touristes et entreprises (+ demande commerciale)',
   LANDMARK: 'Fierté de la ville : + valeur foncière alentour',
 };
+const VENUE_TEXT: Partial<Record<TileType, [string, CityEventKind]>> = {
+  STADIUM: ['Matchs presque tous les mois : foule, tourisme, satisfaction', 'match'],
+  ARENA: ['Concerts réguliers, la nuit la salle s’illumine', 'concert'],
+  FAIR: ['Festival l’été, grande roue toute l’année', 'festival'],
+  MARKET: ['Jour de marché fréquent, marché de Noël en décembre', 'market'],
+};
+const PLANT_TEXT: Partial<Record<TileType, string>> = {
+  POWER: 'Pollue beaucoup, production stable',
+  WIND: 'Propre ; tourne mieux l’hiver, moins l’été',
+  SOLAR: 'Propre ; produit deux fois moins l’hiver',
+  NUCLEAR: 'Énorme production sans pollution… sauf accident ☢️',
+};
 const TERRAIN_TEXT: Partial<Record<TileType, string>> = {
   GRASS: 'Terrain constructible',
   DIRT: 'Terrain constructible',
@@ -77,14 +100,21 @@ export function TileInfo() {
   const clear = useGameStore((s) => s.setTool);
   const funding = useGameStore((s) => s.funding);
   const maps = useGameStore((s) => s.maps);
+  const month = useGameStore((s) => s.month);
+  const forced = useGameStore((s) => s.forcedEvents);
+  const cityEvents = useGameStore((s) => s.cityEvents);
+  const organizeEvent = useGameStore((s) => s.organizeEvent);
 
   const info = useMemo(() => {
     if (!selected) return null;
     const idx = tileIndex(selected.x, selected.y, size);
     const t = tiles[idx];
     const lines: string[] = [];
+    lines.push(`🏘️ Quartier : ${districtAt(size, t.x, t.y).name}`);
     if (t.fire > 0) lines.push(`🔥 EN FEU depuis ${t.fire} mois !`);
     if (t.flood > 0) lines.push(`🌊 Hors service encore ${t.flood} mois`);
+    if (t.rad > 0) lines.push(`☢️ Contaminé (niveau ${t.rad}/9) : inhabitable, baisse d’un cran par an`);
+    if (t.value < 0 && t.density === 0 && isZone(t.type)) lines.push('🏗️ Parcelle sinistrée : reconstruction en cours');
     if (isZone(t.type)) {
       const road = computeRoadAccess(tiles, size)[idx] === 1;
       const cov = computeCoverage(tiles, size, funding);
@@ -104,7 +134,7 @@ export function TileInfo() {
         (cov.LANDFILL[idx] > 0 || cov.INCINERATOR[idx] > 0) && '🗑️',
       ].filter(Boolean);
       lines.push(services.length ? `Services : ${services.join(' ')}` : 'Aucun service public à proximité');
-      lines.push(`💎 Valeur foncière ${t.value}/100`);
+      lines.push(`💎 Valeur foncière ${Math.max(0, t.value)}/100 · ⚡ ${Math.round(powerUse(t) * 10) / 10} MW`);
       if (maps) {
         const pol = Math.round(maps.pollution[idx] * 100);
         const cri = Math.round(maps.crime[idx] * 100);
@@ -112,8 +142,23 @@ export function TileInfo() {
       }
       if (t.garbage >= 5) lines.push('🗑️ Les ordures s’entassent : il faut une décharge');
       if (!t.water && t.density >= 1) lines.push('💡 Il faut de l’eau pour dépasser le niveau 1');
-    } else if (t.type === 'POWER') {
-      lines.push('Alimente le réseau jusqu’à 15 cases', 'Entretien $120/mois');
+    } else if (isPlant(t.type)) {
+      const mw = Math.round(PLANT_OUTPUT[t.type] * plantFactor(t.type, month));
+      lines.push(PLANT_TEXT[t.type]!);
+      lines.push(t.flood > 0 ? '⚠️ En panne' : `⚡ Produit ${formatNumber(mw)} MW ce mois-ci (portée 15 cases)`);
+      lines.push(`Entretien ${formatMoney(UPKEEP[t.type] ?? 0)}/mois`);
+    } else if (isLogistics(t.type)) {
+      lines.push(`Exporte la production de ${formatNumber(LOGISTICS_CAPACITY[t.type])} emplois industriels`);
+      lines.push('Les usines doivent être reliées par la route');
+      lines.push(t.powered ? '⚡ En service' : '⚠️ Hors service : pas de courant');
+      lines.push(`Entretien ${formatMoney(UPKEEP[t.type] ?? 0)}/mois`);
+    } else if (isVenue(t.type)) {
+      const [text] = VENUE_TEXT[t.type]!;
+      lines.push(text);
+      const now = cityEvents.find((e) => e.x === t.x && e.y === t.y);
+      if (now) lines.push(`${EVENT_LABELS[now.kind].icon} En ce moment : ${EVENT_LABELS[now.kind].label}`);
+      lines.push(`Tourisme +${formatMoney(VENUE_TOURISM[t.type])}/mois, plus les événements`);
+      lines.push(t.powered ? '⚡ En service' : '⚠️ Hors service : pas de courant');
     } else if (isRoadType(t.type)) {
       const load = maps ? Math.round(maps.traffic[idx] * 100) : 0;
       lines.push(`Capacité ${formatNumber(ROAD_CAPACITY[t.type])} trajets/mois · trafic ${load} %`);
@@ -133,8 +178,9 @@ export function TileInfo() {
       if (t.type !== 'PARK' && t.type !== 'BUSSTOP') lines.push(t.powered ? '⚡ En service' : '⚠️ Hors service : pas de courant');
       lines.push(`Entretien ${formatMoney(UPKEEP[t.type] ?? 0)}/mois`);
     }
-    return { title: NAMES[t.type], lines, x: t.x, y: t.y };
-  }, [selected, tiles, size, funding, maps]);
+    const venue = isVenue(t.type) && t.powered ? VENUE_TEXT[t.type]![1] : null;
+    return { title: NAMES[t.type], lines, x: t.x, y: t.y, venue, planned: forced.some((f) => f.x === t.x && f.y === t.y) };
+  }, [selected, tiles, size, funding, maps, month, cityEvents, forced]);
 
   if (!info) return null;
   return (
@@ -158,6 +204,17 @@ export function TileInfo() {
             {l}
           </Text>
         ))}
+        {info.venue && (
+          <Pressable
+            onPress={() => organizeEvent(info.x, info.y)}
+            disabled={info.planned}
+            style={({ pressed }) => [styles.cta, info.planned && { opacity: 0.6 }, pressed && { opacity: 0.7 }]}
+          >
+            <Text style={styles.ctaText}>
+              {info.planned ? '✅ Événement programmé le mois prochain' : `${EVENT_LABELS[info.venue].icon} Organiser un événement (${formatMoney(EVENT_COST)})`}
+            </Text>
+          </Pressable>
+        )}
       </Glass>
     </Animated.View>
   );
@@ -178,4 +235,6 @@ const styles = StyleSheet.create({
   coords: { color: theme.textDim, fontSize: 13, flex: 1, fontVariant: ['tabular-nums'] },
   close: { color: theme.textDim, fontSize: 16, fontWeight: '700' },
   line: { color: theme.text, fontSize: 14 },
+  cta: { alignSelf: 'flex-start', marginTop: 6, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12, backgroundColor: 'rgba(142,68,173,0.9)' },
+  ctaText: { color: theme.text, fontSize: 13, fontWeight: '800' },
 });

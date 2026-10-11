@@ -10,7 +10,7 @@ import {
   type SkPathBuilder,
 } from '@shopify/react-native-skia';
 
-import { isMonument, isRoadType, SERVICE_TYPES, tileIndex, type RoadType, type ServiceType, type Tile } from './map';
+import { isFacility, isPlant, isRoadType, tileIndex, type RoadType, type ServiceType, type Tile } from './map';
 import { getOrigin, getWorldSize, gridToWorld, HALF_H, HALF_W, tileDiamond, type IsoOrigin, type Point } from './iso';
 import { PALETTE, shade } from './palette';
 
@@ -527,6 +527,81 @@ function baseBuildingFor(tile: Tile): Prism[] {
         { ox: 0.3, oy: 0.28, size: 0.04, h: 13, color: '#2c3e50' },
         { ox: 0.3, oy: 0.28, size: 0.12, z: 13, h: 5, color: '#f39c12', stripe: { at: 2, height: 1.5, color: '#ffffff' } },
       ];
+    case 'WIND':
+      return [
+        // Mât blanc et nacelle ; les pales tournent dans le calque des effets.
+        { size: 0.16, h: 3, color: '#bdc3c7' },
+        { size: 0.06, z: 3, h: 46, color: '#f8f9f9' },
+        { size: 0.11, z: 49, h: 4, color: '#ecf0f1' },
+      ];
+    case 'SOLAR': {
+      // Rangées de panneaux sombres sur gravier + onduleur.
+      const panels: Prism[] = [];
+      for (const [ox, oy] of [
+        [-0.22, -0.22],
+        [0.18, -0.22],
+        [-0.22, 0.18],
+        [0.18, 0.18],
+      ]) {
+        panels.push({ ox, oy, size: 0.34, z: 2, h: 2.5, color: '#1b4f72', roofColor: '#2874a6', windows: { floors: 1, cols: 3, color: '#5dade2' } });
+      }
+      panels.push({ ox: 0.36, oy: -0.4, size: 0.1, h: 6, color: '#d5d8dc' });
+      return panels.sort(byDepth);
+    }
+    case 'NUCLEAR':
+      return [
+        // Deux grandes tours de refroidissement, un dôme de confinement, la salle des machines.
+        { ox: -0.24, oy: -0.24, size: 0.46, h: 60, color: '#d5d8dc', stripe: { at: 46, height: 5, color: '#e74c3c' } },
+        { ox: 0.24, oy: -0.24, size: 0.4, h: 52, color: '#d5d8dc', stripe: { at: 40, height: 5, color: '#e74c3c' } },
+        { ox: -0.2, oy: 0.22, size: 0.36, h: 18, color: '#f2f3f4', blob: { r: 9, color: '#f8f9f9' } },
+        { ox: 0.22, oy: 0.22, size: 0.42, h: 16, color: '#85929e', windows: { floors: 1, cols: 3, color: '#d6eaf8' } },
+      ];
+    case 'PORT':
+      return ([
+        // Entrepôt, piles de conteneurs et grue portuaire.
+        { ox: -0.22, oy: -0.24, size: 0.42, h: 12, color: '#7f8c8d', roofColor: '#5d6d7e', windows: { floors: 1, cols: 3, color: '#d5dbdb' } },
+        { ox: 0.24, oy: -0.2, size: 0.2, h: 6, color: '#c0392b' },
+        { ox: 0.24, oy: -0.2, size: 0.2, z: 6, h: 6, color: '#2e86c1' },
+        { ox: 0.24, oy: 0.06, size: 0.2, h: 6, color: '#28b463' },
+        { ox: -0.2, oy: 0.2, size: 0.2, h: 6, color: '#f39c12' },
+        { ox: 0.22, oy: 0.3, size: 0.07, h: 36, color: '#f1c40f' },
+        { ox: 0.1, oy: 0.3, size: 0.07, z: 34, h: 3, color: '#f1c40f' },
+        { ox: -0.02, oy: 0.3, size: 0.07, z: 34, h: 3, color: '#f1c40f' },
+        { ox: -0.14, oy: 0.3, size: 0.07, z: 34, h: 3, color: '#f1c40f' },
+      ] as Prism[]).sort(byDepth);
+    case 'FREIGHT':
+      return ([
+        // Petite gare, wagons de marchandises sur les voies.
+        { ox: -0.28, oy: -0.28, size: 0.32, h: 14, color: '#a04000', roof: 'hip', roofColor: '#6e2c00', roofHeight: 6, windows: { floors: 1, cols: 2, color: '#fae5d3' } },
+        { ox: 0.18, oy: -0.08, size: 0.2, h: 7, color: '#784212' },
+        { ox: 0.18, oy: 0.14, size: 0.2, h: 7, color: '#922b21' },
+        { ox: 0.18, oy: 0.36, size: 0.2, h: 7, color: '#1e8449' },
+        { ox: -0.12, oy: 0.24, size: 0.18, h: 6, color: '#2e86c1' },
+        { ox: -0.12, oy: 0.24, size: 0.18, z: 6, h: 6, color: '#cb4335' },
+      ] as Prism[]).sort(byDepth);
+    case 'MARKET':
+      return ([
+        // Étals aux auvents colorés autour d'une petite halle.
+        { size: 0.5, h: 10, color: '#d35400', roof: 'hip', roofColor: '#a04000', roofHeight: 8, windows: { floors: 1, cols: 3, color: '#fdebd0' } },
+        { ox: -0.32, oy: -0.32, size: 0.18, h: 5, color: '#fdfefe', roof: 'hip', roofColor: '#e74c3c', roofHeight: 4 },
+        { ox: 0.32, oy: -0.32, size: 0.18, h: 5, color: '#fdfefe', roof: 'hip', roofColor: '#f1c40f', roofHeight: 4 },
+        { ox: -0.32, oy: 0.32, size: 0.18, h: 5, color: '#fdfefe', roof: 'hip', roofColor: '#3498db', roofHeight: 4 },
+        { ox: 0.32, oy: 0.32, size: 0.18, h: 5, color: '#fdfefe', roof: 'hip', roofColor: '#27ae60', roofHeight: 4 },
+      ] as Prism[]).sort(byDepth);
+    case 'FAIR':
+      return ([
+        // Chapiteaux rayés et pieds de la grande roue (la roue tourne dans le calque des effets).
+        { ox: -0.26, oy: 0.2, size: 0.34, h: 8, color: '#fdfefe', roof: 'hip', roofColor: '#e74c3c', roofHeight: 12, stripe: { at: 4, height: 2, color: '#e74c3c' } },
+        { ox: 0.24, oy: 0.26, size: 0.26, h: 6, color: '#fdfefe', roof: 'hip', roofColor: '#f1c40f', roofHeight: 9 },
+        { ox: -0.04, oy: -0.32, size: 0.05, h: 30, color: '#5d6d7e' },
+        { ox: 0.16, oy: -0.32, size: 0.05, h: 30, color: '#5d6d7e' },
+      ] as Prism[]).sort(byDepth);
+    case 'ARENA':
+      return [
+        // Salle de concert : coque à dôme violet, enseigne lumineuse.
+        { size: 0.86, h: 14, color: '#6c3483', windows: { floors: 1, cols: 5, color: '#f5b7b1' }, stripe: { at: 10, height: 2, color: '#f1c40f' } },
+        { size: 0.6, z: 14, h: 6, color: '#7d3c98', blob: { r: 15, color: '#a569bd' } },
+      ];
     case 'STADIUM':
       return [
         // Tribunes autour de la pelouse + 4 mâts d'éclairage.
@@ -579,7 +654,7 @@ export function buildingHeight(tile: Tile): number {
 /** Bâtiment d'une tuile, calciné et aux fenêtres rougeoyantes s'il brûle. */
 function buildingFor(tile: Tile): Prism[] {
   const prisms = baseBuildingFor(tile);
-  if (tile.type === 'POWER' && tile.flood > 0) {
+  if (isPlant(tile.type) && tile.flood > 0) {
     // Centrale en panne : éteinte et grisée.
     return prisms.map((p) => ({ ...p, color: shade(p.color, -0.35), windows: p.windows ? { ...p.windows, color: '#34495e' } : undefined }));
   }
@@ -740,9 +815,45 @@ function addGround(batch: PathBatch, tiles: Tile[], size: number, tile: Tile, or
       batch.poly('stroke:' + PALETTE.pavementBorder, diamond);
       break;
     case 'POWER':
+    case 'NUCLEAR':
       batch.poly('fill:' + PALETTE.powerGround, diamond);
       batch.poly('stroke:' + PALETTE.pavementBorder, diamond);
       break;
+    case 'WIND':
+      batch.poly('fill:' + PALETTE.grass, diamond);
+      batch.poly('stroke:' + PALETTE.grassBorder, diamond);
+      break;
+    case 'SOLAR':
+    case 'FREIGHT': {
+      batch.poly('fill:#aab7b8', diamond);
+      batch.poly('stroke:#839192', diamond);
+      if (tile.type === 'FREIGHT') {
+        // Deux voies ferrées en diagonale.
+        for (const o of [0.12, 0.32]) {
+          const a = lerp(d.top, d.left, o + 0.2);
+          const b = lerp(d.right, d.bottom, o + 0.2);
+          strip(batch, 'deco:#5d4037', a, b, 2.4);
+          strip(batch, 'deco:#2c3e50', a, b, 0.7);
+        }
+      }
+      break;
+    }
+    case 'PORT': {
+      pave();
+      // Quai : bordure jaune côté eau.
+      strip(batch, 'deco:#f1c40f', lerp(d.left, d.bottom, 0.1), lerp(d.left, d.bottom, 0.9), 1);
+      break;
+    }
+    case 'FAIR':
+      batch.poly('fill:#f5cba7', diamond);
+      batch.poly('stroke:#e59866', diamond);
+      break;
+    case 'MARKET': {
+      pave();
+      const inset = footprint(center, 0.9, 0);
+      batch.poly('zone:#e59866', [inset.top, inset.right, inset.bottom, inset.left]);
+      break;
+    }
     case 'PARK': {
       batch.poly('fill:' + PALETTE.grassBorder, diamond);
       batch.poly('stroke:' + PALETTE.grassBorder, diamond);
@@ -776,7 +887,9 @@ function addGround(batch: PathBatch, tiles: Tile[], size: number, tile: Tile, or
   }
 
   // Inondation : voile d'eau translucide.
-  if (tile.flood > 0 && tile.type !== 'POWER') batch.poly(`tint:${PALETTE.flood}:0.55`, diamond);
+  if (tile.flood > 0 && !isPlant(tile.type)) batch.poly(`tint:${PALETTE.flood}:0.55`, diamond);
+  // Contamination radioactive : voile jaune-vert, plus fort près de l'accident.
+  if (tile.rad > 0) batch.poly(`tint:#b7d433:${(0.2 + tile.rad * 0.04).toFixed(2)}`, diamond);
 
   // Falaises sur les bords sud-ouest et sud-est de la carte (bleues sous l'eau).
   const drop = { x: 0, y: CLIFF_DEPTH };
@@ -957,8 +1070,7 @@ export function buildBuildingPicture(tiles: Tile[], gridSize: number, b: Block) 
         drawPrism(canvas, center, prism);
         top = Math.max(top, prismTop(prism));
       }
-      const needsPower =
-        isZone(t) || isMonument(t.type) || (t.type !== 'PARK' && t.type !== 'BUSSTOP' && SERVICE_TYPES.includes(t.type as ServiceType));
+      const needsPower = isZone(t) || (isFacility(t.type) && t.type !== 'PARK' && t.type !== 'BUSSTOP' && !isPlant(t.type));
       if (needsPower && !t.powered) drawNoPower(canvas, center, top);
       else if (isZone(t) && t.density > 0 && !t.water) drawNoWater(canvas, center, top);
       if (isZone(t) && t.garbage >= 5) drawGarbage(canvas, center);
@@ -1081,27 +1193,54 @@ export function buildMapPicture(tiles: Tile[], gridSize: number) {
 // Vues de données (trafic, pollution, criminalité, valeur, déchets)
 // ---------------------------------------------------------------------------
 
-/** Dégradé vert -> jaune -> rouge. */
-function heatColor(v: number): string {
-  const t = Math.max(0, Math.min(1, v));
-  const r = t < 0.5 ? Math.round(46 + (241 - 46) * (t / 0.5)) : Math.round(241 + (231 - 241) * ((t - 0.5) / 0.5));
-  const g = t < 0.5 ? Math.round(204 + (196 - 204) * (t / 0.5)) : Math.round(196 + (76 - 196) * ((t - 0.5) / 0.5));
-  const bl = t < 0.5 ? Math.round(113 + (15 - 113) * (t / 0.5)) : Math.round(15 + (60 - 15) * ((t - 0.5) / 0.5));
-  return `#${((1 << 24) | (r << 16) | (g << 8) | bl).toString(16).slice(1)}`;
+/** Dégradés (du bien vers le mal) : classique vert → rouge, ou bleu → orange lisible par les daltoniens. */
+export const HEAT_STOPS = {
+  normal: ['#2ecc71', '#a3d65c', '#f1c40f', '#e67e22', '#e74c3c'],
+  colorblind: ['#2c7bb6', '#7fb6d6', '#f7f4b9', '#fdae61', '#d7301f'],
+};
+
+const hexRgb = (h: string) => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
+
+export function heatColor(v: number, colorblind = false): string {
+  const stops = colorblind ? HEAT_STOPS.colorblind : HEAT_STOPS.normal;
+  const t = Math.max(0, Math.min(1, v)) * (stops.length - 1);
+  const i = Math.min(stops.length - 2, Math.floor(t));
+  const f = t - i;
+  const a = hexRgb(stops[i]);
+  const b = hexRgb(stops[i + 1]);
+  const c = a.map((x, k) => Math.round(x + (b[k] - x) * f));
+  return `#${((1 << 24) | (c[0] << 16) | (c[1] << 8) | c[2]).toString(16).slice(1)}`;
+}
+
+/** Teinte HSL -> hex (couleurs des quartiers). */
+export function hueColor(h: number, s = 0.55, l = 0.55): string {
+  const k = (n: number) => (n + h / 30) % 12;
+  const a = s * Math.min(l, 1 - l);
+  const f = (n: number) => Math.round(255 * (l - a * Math.max(-1, Math.min(k(n) - 3, 9 - k(n), 1))));
+  return `#${((1 << 24) | (f(0) << 16) | (f(8) << 8) | f(4)).toString(16).slice(1)}`;
 }
 
 /**
- * Carte thématique : chaque tuile teintée selon une valeur 0-1 (vert = bien,
- * rouge = mal). `roadsOnly` pour le trafic.
+ * Carte thématique : chaque tuile teintée selon une valeur 0-1 (bien → mal),
+ * ou d'une couleur choisie (`colorOf`, pour les quartiers).
  */
-export function buildDataPicture(tiles: Tile[], gridSize: number, values: (t: Tile, i: number) => number | null) {
+export function buildDataPicture(
+  tiles: Tile[],
+  gridSize: number,
+  values: (t: Tile, i: number) => number | null,
+  opts: { colorblind?: boolean; colorOf?: (t: Tile, i: number) => string | null; alpha?: number } = {},
+) {
   const origin = getOrigin(gridSize);
   return createPicture((canvas) => {
     const buckets = new Map<string, SkPathBuilder>();
     for (let i = 0; i < tiles.length; i++) {
-      const v = values(tiles[i], i);
-      if (v === null) continue;
-      const color = heatColor(Math.round(v * 10) / 10);
+      let color: string | null;
+      if (opts.colorOf) color = opts.colorOf(tiles[i], i);
+      else {
+        const v = values(tiles[i], i);
+        color = v === null ? null : heatColor(Math.round(v * 10) / 10, opts.colorblind);
+      }
+      if (color === null) continue;
       let bld = buckets.get(color);
       if (!bld) {
         bld = Skia.PathBuilder.Make();
@@ -1112,9 +1251,33 @@ export function buildDataPicture(tiles: Tile[], gridSize: number, values: (t: Ti
     }
     for (const [color, bld] of buckets) {
       const paint = fillPaint(color).copy();
-      paint.setAlphaf(0.62);
+      paint.setAlphaf(opts.alpha ?? 0.62);
       canvas.drawPath(bld.detach(), paint);
     }
+  }, worldRect(gridSize));
+}
+
+/**
+ * Aperçu d'un glisser (rectangle de zonage, route droite) : losanges teintés de
+ * la couleur de l'outil, en rouge là où c'est impossible.
+ */
+export function buildPreviewPicture(gridSize: number, cells: { x: number; y: number; ok: boolean }[], color: string) {
+  const origin = getOrigin(gridSize);
+  return createPicture((canvas) => {
+    const okPath = Skia.PathBuilder.Make();
+    const badPath = Skia.PathBuilder.Make();
+    for (const c of cells) {
+      const d = tileDiamond(c.x, c.y, origin);
+      (c.ok ? okPath : badPath).addPoly([d.top, d.right, d.bottom, d.left], true);
+    }
+    const ok = okPath.detach();
+    const fill = fillPaint(color).copy();
+    fill.setAlphaf(0.5);
+    canvas.drawPath(ok, fill);
+    canvas.drawPath(ok, strokePaint('#ffffff', 1));
+    const bad = fillPaint('#e74c3c').copy();
+    bad.setAlphaf(0.35);
+    canvas.drawPath(badPath.detach(), bad);
   }, worldRect(gridSize));
 }
 

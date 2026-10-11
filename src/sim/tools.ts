@@ -1,11 +1,11 @@
-import { isBuildableGround, isMonument, isRoadType, type Tile } from '../engine/map';
-import { MONUMENT_UNLOCK, TOOL_BY_ID, type ToolId } from './constants';
+import { isBuildableGround, isMonument, isRoadType, isVenue, type Tile } from '../engine/map';
+import { MONUMENT_UNLOCK, NUCLEAR_UNLOCK, TOOL_BY_ID, VENUE_UNLOCK, type ToolId } from './constants';
 import { applyPower } from './power';
 
 export type ToolResult = { ok: true; tiles: Tile[]; cost: number } | { ok: false; reason: string };
 
 /** Contexte de construction : budget et population (pour débloquer les monuments). */
-export type BuildContext = { funds: number; population: number };
+export type BuildContext = { funds: number; population: number; month?: number };
 
 /** Surcoût d'un pont (route sur l'eau) et du défrichage d'une forêt. */
 export const BRIDGE_FACTOR = 4;
@@ -54,7 +54,7 @@ export function toolCost(tiles: Tile[], size: number, tool: ToolId, x: number, y
 
 /** Applique un outil sur une tuile. Pure : renvoie une nouvelle carte (ou une raison de refus). */
 export function applyTool(tiles: Tile[], size: number, tool: ToolId, x: number, y: number, ctx: BuildContext | number): ToolResult {
-  const { funds, population } = typeof ctx === 'number' ? { funds: ctx, population: Infinity } : ctx;
+  const { funds, population, month } = typeof ctx === 'number' ? { funds: ctx, population: Infinity, month: 3 } : ctx;
   if (x < 0 || y < 0 || x >= size || y >= size) return { ok: false, reason: 'Hors de la carte' };
   const def = TOOL_BY_ID[tool];
   const idx = y * size + x;
@@ -73,12 +73,18 @@ export function applyTool(tiles: Tile[], size: number, tool: ToolId, x: number, 
   } else {
     const places = def.places!;
     if (tile.type === places) return { ok: false, reason: '' };
+    if (tile.rad > 0) return { ok: false, reason: 'Terrain contaminé ☢️ — attendez la décontamination' };
     if (isMonument(places)) {
       if (population < MONUMENT_UNLOCK[places]) {
         return { ok: false, reason: `🔒 Débloqué à ${MONUMENT_UNLOCK[places]} habitants` };
       }
       if (tiles.some((t) => t.type === places)) return { ok: false, reason: 'Un seul exemplaire par ville 🏛️' };
     }
+    if (isVenue(places) && population < VENUE_UNLOCK[places]) {
+      return { ok: false, reason: `🔒 Débloqué à ${VENUE_UNLOCK[places]} habitants` };
+    }
+    if (places === 'NUCLEAR' && population < NUCLEAR_UNLOCK) return { ok: false, reason: `🔒 Nucléaire débloqué à ${NUCLEAR_UNLOCK} habitants` };
+    if (places === 'PORT' && !nextToLake(tiles, size, x, y)) return { ok: false, reason: 'Un port se construit au bord de l’eau ⚓' };
     if (isRoadType(places)) {
       // Routes : sur terrain libre, en pont sur l'eau, ou en montée en gamme d'une route existante.
       const upgrade = isRoadType(tile.type) && ROAD_RANK[places] > ROAD_RANK[tile.type];
@@ -99,7 +105,7 @@ export function applyTool(tiles: Tile[], size: number, tool: ToolId, x: number, 
 
   const out = tiles.slice();
   out[idx] = next;
-  return { ok: true, tiles: applyPower(out, size), cost };
+  return { ok: true, tiles: applyPower(out, size, month ?? 3), cost };
 }
 
 /**

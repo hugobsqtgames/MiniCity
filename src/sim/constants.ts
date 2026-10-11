@@ -1,4 +1,4 @@
-import type { MonumentType, ServiceType, TileType, ZoneType } from '../engine/map';
+import type { LogisticsType, MonumentType, PlantType, ServiceType, TileType, VenueType, ZoneType } from '../engine/map';
 
 /** 1 tick = 1 mois de jeu = 2 secondes réelles (vitesse 1×). */
 export const TICK_MS = 2000;
@@ -76,6 +76,14 @@ export const UPKEEP: Partial<Record<TileType, number>> = {
   INCINERATOR: 70,
   RECYCLING: 60,
   BUSSTOP: 6,
+  WIND: 12,
+  SOLAR: 18,
+  NUCLEAR: 380,
+  PORT: 110,
+  FREIGHT: 70,
+  MARKET: 20,
+  FAIR: 55,
+  ARENA: 90,
   STADIUM: 150,
   UNIVERSITY: 180,
   AIRPORT: 250,
@@ -128,8 +136,14 @@ export function fundingOf(t: TileType): FundingKey | null {
     case 'BUSSTOP':
       return 'transport';
     case 'POWER':
+    case 'WIND':
+    case 'SOLAR':
+    case 'NUCLEAR':
     case 'WATER':
       return 'utilities';
+    case 'PORT':
+    case 'FREIGHT':
+      return 'transport';
     case 'LANDFILL':
     case 'INCINERATOR':
     case 'RECYCLING':
@@ -177,24 +191,66 @@ export const DEFAULT_ORDINANCES = Object.fromEntries(ORDINANCES.map((o) => [o.id
 // ---------------------------------------------------------------------------
 
 export const MONUMENT_UNLOCK: Record<MonumentType, number> = {
-  STADIUM: 3000,
   UNIVERSITY: 6000,
   AIRPORT: 10000,
   LANDMARK: 16000,
 };
 /** Recettes touristiques mensuelles apportées par chaque monument. */
 export const MONUMENT_TOURISM: Record<MonumentType, number> = {
-  STADIUM: 400,
   UNIVERSITY: 150,
   AIRPORT: 900,
   LANDMARK: 700,
 };
 export const MONUMENT_RADIUS: Record<MonumentType, number> = {
-  STADIUM: 14,
   UNIVERSITY: 20,
   AIRPORT: 18,
   LANDMARK: 12,
 };
+
+// ---------------------------------------------------------------------------
+// Énergie : production (MW) de chaque centrale, consommation des bâtiments
+// ---------------------------------------------------------------------------
+
+export const PLANT_OUTPUT: Record<PlantType, number> = { POWER: 450, WIND: 70, SOLAR: 90, NUCLEAR: 2200 };
+/** Pollution émise par une centrale en service. */
+export const PLANT_POLLUTION: Record<PlantType, number> = { POWER: 22, WIND: 0, SOLAR: 0, NUCLEAR: 0 };
+/** Population nécessaire pour construire une centrale nucléaire. */
+export const NUCLEAR_UNLOCK = 4000;
+/** Consommation par niveau de densité, et forfaits des équipements. */
+export const POWER_USE = { R: 1, C: 1.6, I: 3, lot: 0.3, service: 3, water: 4, venue: 6, logistics: 6, monument: 8 } as const;
+
+// ---------------------------------------------------------------------------
+// Logistique : exporter la production industrielle
+// ---------------------------------------------------------------------------
+
+/** Emplois industriels dont la production peut être exportée par chaque équipement. */
+export const LOGISTICS_CAPACITY: Record<LogisticsType, number> = { PORT: 2500, FREIGHT: 1200 };
+/** Au-delà de cette population, l'industrie a besoin d'exporter pour se développer. */
+export const EXPORT_NEEDED_AT = 1500;
+
+// ---------------------------------------------------------------------------
+// Lieux d'événements
+// ---------------------------------------------------------------------------
+
+export const VENUE_UNLOCK: Record<VenueType, number> = { MARKET: 0, FAIR: 400, ARENA: 1500, STADIUM: 3000 };
+/** Recettes touristiques de base (hors événements). */
+export const VENUE_TOURISM: Record<VenueType, number> = { MARKET: 20, FAIR: 60, ARENA: 120, STADIUM: 200 };
+
+// ---------------------------------------------------------------------------
+// Saisons
+// ---------------------------------------------------------------------------
+
+export type Season = 'winter' | 'spring' | 'summer' | 'autumn';
+export const SEASON_LABELS: Record<Season, { icon: string; label: string }> = {
+  winter: { icon: '❄️', label: 'Hiver' },
+  spring: { icon: '🌸', label: 'Printemps' },
+  summer: { icon: '☀️', label: 'Été' },
+  autumn: { icon: '🍂', label: 'Automne' },
+};
+export function seasonOf(month: number): Season {
+  const m = ((month % 12) + 12) % 12;
+  return m === 11 || m <= 1 ? 'winter' : m <= 4 ? 'spring' : m <= 7 ? 'summer' : 'autumn';
+}
 
 // ---------------------------------------------------------------------------
 // Outils
@@ -212,6 +268,14 @@ export type ToolId =
   | 'water'
   | 'metro'
   | 'busstop'
+  | 'wind'
+  | 'solar'
+  | 'nuclear'
+  | 'port'
+  | 'freight'
+  | 'market'
+  | 'fair'
+  | 'arena'
   | 'police'
   | 'fire'
   | 'hospital'
@@ -226,7 +290,7 @@ export type ToolId =
   | 'landmark'
   | 'bulldoze';
 
-export type ToolGroup = 'base' | 'zones' | 'networks' | 'services' | 'waste' | 'monuments';
+export type ToolGroup = 'base' | 'zones' | 'energy' | 'networks' | 'services' | 'waste' | 'leisure' | 'monuments';
 
 export type ToolDef = {
   id: ToolId;
@@ -248,10 +312,15 @@ export const TOOLS: ToolDef[] = [
   { id: 'zoneR', label: 'Résidentiel', icon: '🏠', cost: 20, color: '#2ecc71', group: 'zones', places: 'R' },
   { id: 'zoneC', label: 'Commerce', icon: '🏬', cost: 20, color: '#3498db', group: 'zones', places: 'C' },
   { id: 'zoneI', label: 'Industrie', icon: '🏭', cost: 20, color: '#f1c40f', group: 'zones', places: 'I' },
-  { id: 'power', label: 'Centrale', icon: '⚡', cost: 3000, color: '#34495e', group: 'networks', places: 'POWER' },
+  { id: 'power', label: 'Charbon', icon: '🏭', cost: 3000, color: '#34495e', group: 'energy', places: 'POWER' },
+  { id: 'wind', label: 'Éolienne', icon: '🌬️', cost: 700, color: '#ecf0f1', group: 'energy', places: 'WIND' },
+  { id: 'solar', label: 'Solaire', icon: '☀️', cost: 1100, color: '#2e86c1', group: 'energy', places: 'SOLAR' },
+  { id: 'nuclear', label: 'Nucléaire', icon: '⚛️', cost: 16000, color: '#a9cce3', group: 'energy', places: 'NUCLEAR' },
   { id: 'water', label: "Château d'eau", icon: '💧', cost: 400, color: '#5dade2', group: 'networks', places: 'WATER' },
   { id: 'metro', label: 'Métro', icon: '🚇', cost: 700, color: '#16a085', group: 'networks', places: 'METRO' },
   { id: 'busstop', label: 'Arrêt de bus', icon: '🚏', cost: 80, color: '#f39c12', group: 'networks', places: 'BUSSTOP' },
+  { id: 'port', label: 'Port', icon: '⚓', cost: 5000, color: '#1f618d', group: 'networks', places: 'PORT' },
+  { id: 'freight', label: 'Gare de fret', icon: '🚂', cost: 2500, color: '#784212', group: 'networks', places: 'FREIGHT' },
   { id: 'police', label: 'Police', icon: '🚓', cost: 500, color: '#2e4a8a', group: 'services', places: 'POLICE' },
   { id: 'fire', label: 'Pompiers', icon: '🚒', cost: 500, color: '#c0392b', group: 'services', places: 'FIRE' },
   { id: 'hospital', label: 'Hôpital', icon: '🏥', cost: 800, color: '#ecf0f1', group: 'services', places: 'HOSPITAL' },
@@ -260,7 +329,10 @@ export const TOOLS: ToolDef[] = [
   { id: 'landfill', label: 'Décharge', icon: '🗑️', cost: 300, color: '#8d6e63', group: 'waste', places: 'LANDFILL' },
   { id: 'incinerator', label: 'Incinérateur', icon: '🔥', cost: 1500, color: '#6d4c41', group: 'waste', places: 'INCINERATOR' },
   { id: 'recycling', label: 'Recyclage', icon: '♻️', cost: 1200, color: '#43a047', group: 'waste', places: 'RECYCLING' },
-  { id: 'stadium', label: 'Stade', icon: '🏟️', cost: 6000, color: '#e74c3c', group: 'monuments', places: 'STADIUM' },
+  { id: 'market', label: 'Marché', icon: '🛒', cost: 900, color: '#e59866', group: 'leisure', places: 'MARKET' },
+  { id: 'fair', label: 'Fête foraine', icon: '🎡', cost: 2500, color: '#ec7063', group: 'leisure', places: 'FAIR' },
+  { id: 'arena', label: 'Concerts', icon: '🎵', cost: 4000, color: '#8e44ad', group: 'leisure', places: 'ARENA' },
+  { id: 'stadium', label: 'Stade', icon: '🏟️', cost: 6000, color: '#e74c3c', group: 'leisure', places: 'STADIUM' },
   { id: 'university', label: 'Université', icon: '🎓', cost: 8000, color: '#8e44ad', group: 'monuments', places: 'UNIVERSITY' },
   { id: 'airport', label: 'Aéroport', icon: '✈️', cost: 15000, color: '#bdc3c7', group: 'monuments', places: 'AIRPORT' },
   { id: 'landmark', label: 'Tour', icon: '🗼', cost: 12000, color: '#f1c40f', group: 'monuments', places: 'LANDMARK' },
@@ -283,7 +355,7 @@ export const COVERAGE_TOOL: Partial<Record<ToolId, ServiceType>> = {
 };
 
 /** Vues de données (cartes thématiques, comme dans SimCity). */
-export type DataView = 'none' | 'traffic' | 'pollution' | 'crime' | 'value' | 'garbage';
+export type DataView = 'none' | 'traffic' | 'pollution' | 'crime' | 'value' | 'garbage' | 'happiness' | 'districts' | 'power';
 export const DATA_VIEWS: { id: DataView; label: string; icon: string }[] = [
   { id: 'none', label: 'Normale', icon: '🗺️' },
   { id: 'traffic', label: 'Trafic', icon: '🚗' },
@@ -291,6 +363,9 @@ export const DATA_VIEWS: { id: DataView; label: string; icon: string }[] = [
   { id: 'crime', label: 'Criminalité', icon: '🚨' },
   { id: 'value', label: 'Valeur', icon: '💎' },
   { id: 'garbage', label: 'Déchets', icon: '🗑️' },
+  { id: 'happiness', label: 'Satisfaction', icon: '😊' },
+  { id: 'power', label: 'Électricité', icon: '⚡' },
+  { id: 'districts', label: 'Quartiers', icon: '🏘️' },
 ];
 
 export const MONTHS = ['Jan', 'Fév', 'Mar', 'Avr', 'Mai', 'Juin', 'Juil', 'Août', 'Sep', 'Oct', 'Nov', 'Déc'];

@@ -1,10 +1,11 @@
-import { Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import { Pressable, StyleSheet, useWindowDimensions, View } from 'react-native';
 import Animated, { FadeInUp, FadeOutUp } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import type { Tile } from '../engine/map';
 import type { ToolId } from '../sim/constants';
 import { useGameStore } from '../store/useGameStore';
+import { Text } from './Text';
 import { Glass } from './Glass';
 import { HUD_HEIGHT } from './Hud';
 import { theme } from './theme';

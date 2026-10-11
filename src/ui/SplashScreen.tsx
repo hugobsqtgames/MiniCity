@@ -1,9 +1,10 @@
 import { Canvas, Path, Skia } from '@shopify/react-native-skia';
 import { useEffect } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 import Animated, { FadeOut, useAnimatedStyle, useSharedValue, withRepeat, withTiming } from 'react-native-reanimated';
 
 import { PALETTE, shade } from '../engine/palette';
+import { Text } from './Text';
 
 /** Petit logo isométrique : trois blocs R / C / I extrudés. */
 function Logo() {

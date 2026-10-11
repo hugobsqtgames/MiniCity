@@ -1,9 +1,12 @@
 import { useEffect } from 'react';
-import { Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import { Pressable, StyleSheet, useWindowDimensions, View } from 'react-native';
 import Animated, { useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { SEASON_LABELS, seasonOf } from '../sim/constants';
+import { EVENT_LABELS, WEATHER_LABELS } from '../sim/simulation';
 import { useGameStore } from '../store/useGameStore';
+import { Text } from './Text';
 import { formatDate, formatMoney, formatNumber, theme } from './theme';
 import { Glass } from './Glass';
 
@@ -46,6 +49,10 @@ export function Hud({ onOpenMenu }: { onOpenMenu: () => void }) {
   const paused = useGameStore((s) => s.paused);
   const togglePause = useGameStore((s) => s.togglePause);
   const setSpeed = useGameStore((s) => s.setSpeed);
+  const weather = useGameStore((s) => s.weather);
+  const cityEvents = useGameStore((s) => s.cityEvents);
+  const openMenu = useGameStore((s) => s.openMenu);
+  const season = SEASON_LABELS[seasonOf(month)];
 
   const { width } = useWindowDimensions();
   const cycleSpeed = () => setSpeed(speed === 3 ? 1 : ((speed + 1) as 2 | 3));
@@ -65,7 +72,9 @@ export function Hud({ onOpenMenu }: { onOpenMenu: () => void }) {
           </View>
           <View style={styles.row}>
             <Text style={styles.stat}>👨‍👩‍👧‍👦 {formatNumber(population)}</Text>
-            <Text style={styles.stat}>📅 {formatDate(month)}</Text>
+            <Text style={styles.stat}>
+              📅 {formatDate(month)} {weather === 'clear' ? season.icon : WEATHER_LABELS[weather].icon}
+            </Text>
             <Text style={[styles.stat, { color: mood >= 60 ? theme.positive : mood >= 40 ? theme.text : theme.negative }]}>
               {mood >= 60 ? '😊' : mood >= 40 ? '😐' : '😠'} {mood}%
             </Text>
@@ -80,6 +89,14 @@ export function Hud({ onOpenMenu }: { onOpenMenu: () => void }) {
             <Pressable onPress={onOpenMenu} style={styles.chip} hitSlop={6}>
               <Text style={styles.chipText}>⚙︎ Menu</Text>
             </Pressable>
+            {cityEvents.length > 0 && (
+              <Pressable onPress={() => openMenu('events')} style={[styles.chip, styles.chipEvent]} hitSlop={6} accessibilityLabel="Événements en cours">
+                <Text style={styles.chipText}>
+                  {EVENT_LABELS[cityEvents[0].kind].icon}
+                  {cityEvents.length > 1 ? ` ${cityEvents.length}` : ''}
+                </Text>
+              </Pressable>
+            )}
           </View>
         </View>
         <View style={styles.bars}>
@@ -116,6 +133,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.12)',
   },
   chipDim: { opacity: 0.5 },
+  chipEvent: { backgroundColor: 'rgba(142,68,173,0.75)' },
   chipText: { color: theme.text, fontSize: 13, fontWeight: '700' },
   bars: { flexDirection: 'row', gap: 8, alignItems: 'center', paddingLeft: 12 },
   barCol: { alignItems: 'center', gap: 4 },

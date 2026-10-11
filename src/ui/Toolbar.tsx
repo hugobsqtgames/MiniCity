@@ -1,11 +1,12 @@
 import { useEffect } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, useWindowDimensions, View } from 'react-native';
 import Animated, { useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { isMonument } from '../engine/map';
-import { MONUMENT_UNLOCK, TOOLS, type ToolDef, type ToolGroup } from '../sim/constants';
+import { isMonument, isVenue } from '../engine/map';
+import { MONUMENT_UNLOCK, NUCLEAR_UNLOCK, TOOLS, VENUE_UNLOCK, type ToolDef, type ToolGroup } from '../sim/constants';
 import { useGameStore } from '../store/useGameStore';
+import { Text } from './Text';
 import { formatMoney, formatNumber, theme } from './theme';
 import { Glass } from './Glass';
 
@@ -14,9 +15,11 @@ export const TOOLBAR_HEIGHT = 112;
 const GROUP_LABELS: Record<ToolGroup, string> = {
   base: 'Outils',
   zones: 'Routes & zones',
-  networks: 'Réseaux',
+  energy: 'Énergie',
+  networks: 'Eau & transports',
   services: 'Services',
   waste: 'Déchets',
+  leisure: 'Loisirs',
   monuments: 'Monuments',
 };
 
@@ -57,11 +60,17 @@ export function Toolbar() {
   const { width } = useWindowDimensions();
   // Monuments : verrouillés sous un seuil de population, un seul exemplaire chacun.
   const built = new Set(tiles.filter((t) => isMonument(t.type)).map((t) => t.type));
+  const needOf = (t: ToolDef): number => {
+    if (!t.places) return 0;
+    if (isMonument(t.places)) return MONUMENT_UNLOCK[t.places];
+    if (isVenue(t.places)) return VENUE_UNLOCK[t.places];
+    return t.places === 'NUCLEAR' ? NUCLEAR_UNLOCK : 0;
+  };
   const lockOf = (t: ToolDef): string | null => {
-    if (!t.places || !isMonument(t.places)) return null;
-    if (built.has(t.places)) return 'construit';
-    const need = MONUMENT_UNLOCK[t.places];
-    return population < need ? `${need / 1000}k hab.` : null;
+    if (!t.places) return null;
+    if (isMonument(t.places) && built.has(t.places)) return 'construit';
+    const need = needOf(t);
+    return population < need ? (need >= 1000 ? `${need / 1000}k hab.` : `${need} hab.`) : null;
   };
 
   return (
@@ -80,7 +89,7 @@ export function Toolbar() {
                 onPress={() => {
                   const lock = lockOf(t);
                   if (lock === 'construit') showToast(`${t.icon} ${t.label} : un seul exemplaire par ville`);
-                  else if (lock && t.places && isMonument(t.places)) showToast(`🔒 ${t.label} : débloqué à ${formatNumber(MONUMENT_UNLOCK[t.places])} habitants`);
+                  else if (lock) showToast(`🔒 ${t.label} : débloqué à ${formatNumber(needOf(t))} habitants`);
                   else setTool(t.id);
                 }}
               />

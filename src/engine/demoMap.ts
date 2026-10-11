@@ -175,8 +175,22 @@ export function createDemoMap(size: number): Tile[] {
   set(20, 31, 'RECYCLING');
   set(31, 10, 'LANDFILL');
 
-  // Monuments.
+  // Logistique : port sur la rivière (près du pont) et gare de fret à l'est.
+  set(19, 42, 'PORT');
+  set(37, 36, 'FREIGHT');
+  set(7, 30, 'FREIGHT');
+
+  // Énergies renouvelables au nord-est, reliées au réseau par la route.
+  for (let x = 40; x <= 44; x++) set(x, 11, 'WIND');
+  for (let x = 40; x <= 43; x++) set(x, 12, 'SOLAR');
+
+  // Lieux d'événements.
   set(33, 23, 'STADIUM');
+  set(25, 26, 'MARKET');
+  set(12, 26, 'FAIR');
+  set(35, 19, 'ARENA');
+
+  // Monuments.
   set(24, 17, 'LANDMARK');
   set(10, 39, 'UNIVERSITY');
   for (let x = 8; x <= 11; x++) set(x, 38, 'ROAD');

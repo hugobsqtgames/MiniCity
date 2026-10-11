@@ -29,6 +29,7 @@ export const AGENT_FIRETRUCK = 4;
 export const AGENT_BUS = 5;
 export const AGENT_AMBULANCE = 6;
 export const AGENT_GARBAGE = 7;
+export const AGENT_PLOW = 8;
 
 /** Bulles d'humeur au-dessus des piétons. */
 export const BUBBLE_HEART = 0;
@@ -86,13 +87,14 @@ export const CAR_COLORS = ['#e74c3c', '#ecf0f1', '#3498db', '#f39c12', '#8e44ad'
 export const SHIRT_COLORS = ['#e67e22', '#9b59b6', '#3498db', '#e74c3c', '#ecf0f1', '#1abc9c'];
 
 /** Tables de teintes précalculées côté JS (le worklet ne fait que les lire). */
-const BODY = [...CAR_COLORS, '#f5f5f5', '#c0392b', '#f1c40f', '#ecf0f1', '#ffffff', '#1e8449'];
+const BODY = [...CAR_COLORS, '#f5f5f5', '#c0392b', '#f1c40f', '#ecf0f1', '#ffffff', '#1e8449', '#e67e22'];
 const COLOR_POLICE = CAR_COLORS.length;
 const COLOR_FIRE = CAR_COLORS.length + 1;
 const COLOR_BUS = CAR_COLORS.length + 2;
 const COLOR_TRUCK = CAR_COLORS.length + 3;
 const COLOR_AMBULANCE = CAR_COLORS.length + 4;
 const COLOR_GARBAGE = CAR_COLORS.length + 5;
+const COLOR_PLOW = CAR_COLORS.length + 6;
 const BODY_LIGHT = BODY.map((c) => shade(c, 0.25));
 const BODY_MID = BODY.map((c) => shade(c, -0.15));
 const BODY_DARK = BODY.map((c) => shade(c, -0.45));
@@ -563,7 +565,10 @@ type Prepared = { drafts: Draft[]; scene: Omit<AgentsScene, 'agents'>; rand: () 
  * Prépare tous les itinéraires. `scale` réduit le nombre d'agents (qualité),
  * `issues` donne les bulles de mécontentement possibles.
  */
-function prepare(tiles: Tile[], size: number, population: number, riders: number, scale: number, issues: number[]): Prepared {
+/** Options de la scène : événements en cours (foules) et hiver (chasse-neige). */
+export type SceneOptions = { events?: { x: number; y: number }[]; winter?: boolean };
+
+function prepare(tiles: Tile[], size: number, population: number, riders: number, scale: number, issues: number[], opts: SceneOptions = {}): Prepared {
   const fires: FireSpot[] = tiles
     .filter((t) => t.fire > 0)
     .map((t, k) => ({ gx: t.x + 0.5, gy: t.y + 0.5, seed: k * 1.7, z: Math.max(6, buildingHeight(t) - 6) }));
@@ -614,10 +619,18 @@ function prepare(tiles: Tile[], size: number, population: number, riders: number
     add(AGENT_CAR, seq, 1.5 + rand() * 0.1, Math.floor(rand() * CAR_COLORS.length));
   }
 
-  // 2. Camions de livraison : usines → commerces.
-  const trucks = Math.round((factories.length ? Math.min(18, factories.length / 4) : 0) * scale);
+  // 2. Camions : usines → commerces, et usines → port / gare de fret pour l'export.
+  const hubs = tiles.filter((t) => (t.type === 'PORT' || t.type === 'FREIGHT') && t.powered).map((t) => nearestRoad(size, isRoad, t.x, t.y)).filter((r) => r >= 0);
+  const trucks = Math.round((factories.length ? Math.min(22, factories.length / 4) : 0) * scale);
   for (let k = 0; k < trucks; k++) {
-    add(AGENT_TRUCK, (shops.length && roadPath(pick(factories), pick(shops), size, isRoad)) || randomWalk(pick(factories), size, isRoad, 16, rand), 1.35, COLOR_TRUCK);
+    const dest = hubs.length && k % 2 === 0 ? pick(hubs) : shops.length ? pick(shops) : -1;
+    add(AGENT_TRUCK, (dest >= 0 && roadPath(pick(factories), dest, size, isRoad)) || randomWalk(pick(factories), size, isRoad, 16, rand), 1.35, COLOR_TRUCK);
+  }
+
+  // 2 bis. L'hiver, les chasse-neige sillonnent les grands axes.
+  if (opts.winter) {
+    const plows = Math.max(1, Math.round(Math.min(6, roads.length / 80) * Math.max(0.5, scale)));
+    for (let k = 0; k < plows; k++) add(AGENT_PLOW, randomWalk(pick(roads), size, isRoad, 26, rand), 1.1, COLOR_PLOW);
   }
 
   // 3. Bus : une ligne qui relie les arrêts dans l'ordre du plus proche voisin, et marque l'arrêt.
@@ -701,12 +714,25 @@ function prepare(tiles: Tile[], size: number, population: number, riders: number
     drafts.push(pedestrian(seq, size, rand, Math.floor(rand() * SHIRT_COLORS.length), inter, bubble));
   }
 
+  // 9. Foules : les spectateurs convergent vers les lieux d'événements.
+  for (const ev of opts.events ?? []) {
+    const target = nearestRoad(size, isRoad, ev.x, ev.y);
+    if (target < 0) continue;
+    const near = roads.filter((r) => Math.abs((r % size) - ev.x) + Math.abs(Math.floor(r / size) - ev.y) <= 9 && r !== target);
+    const crowd = Math.round(16 * Math.max(0.5, scale));
+    for (let p = 0; p < crowd && near.length; p++) {
+      const seq = roadPath(pick(near), target, size, isRoad);
+      if (!seq || seq.length < 2) continue;
+      drafts.push(pedestrian(seq, size, rand, Math.floor(rand() * SHIRT_COLORS.length), inter, rand() < 0.4 ? BUBBLE_HEART : -1));
+    }
+  }
+
   return { drafts, scene: { fires, lights, metro, waiting }, rand };
 }
 
 /** Construit la scène des PNJ d'un coup (tests, aperçus). */
-export function buildAgents(tiles: Tile[], size: number, population: number, riders = 0, scale = 1, issues: number[] = []): AgentsScene {
-  const p = prepare(tiles, size, population, riders, scale, issues);
+export function buildAgents(tiles: Tile[], size: number, population: number, riders = 0, scale = 1, issues: number[] = [], opts: SceneOptions = {}): AgentsScene {
+  const p = prepare(tiles, size, population, riders, scale, issues, opts);
   const gen = simulateTraffic(p.drafts, p.rand);
   let r = gen.next();
   while (!r.done) r = gen.next();
@@ -726,8 +752,9 @@ export async function buildAgentsAsync(
   scale: number,
   issues: number[],
   cancelled: () => boolean,
+  opts: SceneOptions = {},
 ): Promise<AgentsScene | null> {
-  const p = prepare(tiles, size, population, riders, scale, issues);
+  const p = prepare(tiles, size, population, riders, scale, issues, opts);
   const gen = simulateTraffic(p.drafts, p.rand);
   let slice = Date.now();
   let r = gen.next();
@@ -791,6 +818,7 @@ const ROLE: Record<number, string> = {
   [AGENT_BUS]: 'Chauffeur·se de bus',
   [AGENT_TRUCK]: 'Livreur·se',
   [AGENT_GARBAGE]: 'Éboueur·se',
+  [AGENT_PLOW]: 'Conducteur·rice de chasse-neige',
 };
 
 const QUOTES: Record<number, string[]> = {
@@ -1097,7 +1125,7 @@ export function drawAgents(
 
     // Gabarits : demi-longueur L, demi-largeur W, hauteurs de caisse et de toit.
     const isAmbulance = ag.kind === AGENT_AMBULANCE;
-    const isTruck = ag.kind === AGENT_TRUCK || ag.kind === AGENT_FIRETRUCK || ag.kind === AGENT_GARBAGE || isAmbulance;
+    const isTruck = ag.kind === AGENT_TRUCK || ag.kind === AGENT_FIRETRUCK || ag.kind === AGENT_GARBAGE || ag.kind === AGENT_PLOW || isAmbulance;
     const isBus = ag.kind === AGENT_BUS;
     const L = isBus ? 0.36 : isAmbulance ? 0.23 : isTruck ? 0.27 : 0.19;
     const W = isBus || isTruck ? 0.12 : 0.1;
@@ -1164,6 +1192,15 @@ export function drawAgents(
         (blink ? blue : red).addCircle(sx + 1.4, sy, 1.3);
       } else if (blink) {
         red.addCircle(sx, sy, 1.6);
+      }
+    }
+    // Chasse-neige : lame à l'avant et gyrophare orange.
+    if (ag.kind === AGENT_PLOW) {
+      addBox(scrap, dark[c], dark[c], gx, gy, 0.5, 3, ux, uy, L * 1.0, L * 1.18, W * 1.35, originX, originY);
+      if (blink) {
+        const lx = gx + ux * L * 0.6;
+        const ly = gy + uy * L * 0.6;
+        lamps[LIGHT_YELLOW].addCircle(originX + (lx - ly) * HALF_W, originY + (lx + ly) * HALF_H - 10.2, 1.5);
       }
     }
   }
