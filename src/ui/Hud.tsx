@@ -72,8 +72,8 @@ export function Hud({ onOpenMenu }: { onOpenMenu: () => void }) {
           </View>
           <View style={styles.row}>
             <Text style={styles.stat}>👨‍👩‍👧‍👦 {formatNumber(population)}</Text>
-            <Text style={styles.stat}>
-              📅 {formatDate(month)} {weather === 'clear' ? season.icon : WEATHER_LABELS[weather].icon}
+            <Text style={styles.stat} accessibilityLabel={`${formatDate(month)}, ${season.label}, ${WEATHER_LABELS[weather].label}`}>
+              {weather === 'clear' ? season.icon : WEATHER_LABELS[weather].icon} {formatDate(month)}
             </Text>
             <Text style={[styles.stat, { color: mood >= 60 ? theme.positive : mood >= 40 ? theme.text : theme.negative }]}>
               {mood >= 60 ? '😊' : mood >= 40 ? '😐' : '😠'} {mood}%

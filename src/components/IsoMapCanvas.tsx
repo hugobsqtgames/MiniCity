@@ -256,11 +256,11 @@ function EffectsLayer({
           const grow = Math.min(1, ph / 0.6);
           const fade = ph < 0.9 ? 1 : 1 - (ph - 0.9) / 0.9;
           const p = hazePaint(0.9 * fade, colors[Math.abs(seed) % colors.length]);
-          const rays = 14;
+          const rays = 18;
           for (let r = 0; r < rays; r++) {
             const a = (r / rays) * Math.PI * 2;
-            const dist = 26 * grow;
-            canvas.drawCircle(cx + Math.cos(a) * dist, cy + Math.sin(a) * dist + ph * ph * 6, ev.big ? 2 : 1.5, p);
+            const dist = (ev.big ? 40 : 28) * grow;
+            canvas.drawCircle(cx + Math.cos(a) * dist, cy + Math.sin(a) * dist + ph * ph * 8, ev.big ? 2.8 : 2, p);
           }
         }
       }
@@ -615,8 +615,8 @@ export function IsoMapCanvas() {
     autumn.set(withTiming(season === 'autumn' ? 1 : 0, cfg));
     summer.set(withTiming(season === 'summer' ? 1 : 0, cfg));
   }, [season, weather, snow, autumn, summer]);
-  const snowGround = useDerivedValue(() => snow.get() * 0.6);
-  const snowRoofs = useDerivedValue(() => snow.get() * 0.22);
+  const snowGround = useDerivedValue(() => snow.get() * 0.82);
+  const snowRoofs = useDerivedValue(() => snow.get() * 0.3);
   const autumnTint = useDerivedValue(() => autumn.get() * 0.13);
   const summerTint = useDerivedValue(() => summer.get() * 0.07);
 

@@ -564,10 +564,11 @@ function baseBuildingFor(tile: Tile): Prism[] {
         { ox: 0.24, oy: -0.2, size: 0.2, z: 6, h: 6, color: '#2e86c1' },
         { ox: 0.24, oy: 0.06, size: 0.2, h: 6, color: '#28b463' },
         { ox: -0.2, oy: 0.2, size: 0.2, h: 6, color: '#f39c12' },
-        { ox: 0.22, oy: 0.3, size: 0.07, h: 36, color: '#f1c40f' },
-        { ox: 0.1, oy: 0.3, size: 0.07, z: 34, h: 3, color: '#f1c40f' },
-        { ox: -0.02, oy: 0.3, size: 0.07, z: 34, h: 3, color: '#f1c40f' },
-        { ox: -0.14, oy: 0.3, size: 0.07, z: 34, h: 3, color: '#f1c40f' },
+        // Grue : pylône, flèche continue vers l'eau, câble et conteneur suspendu.
+        { ox: 0.24, oy: 0.3, size: 0.08, h: 38, color: '#f1c40f' },
+        ...[0.17, 0.11, 0.05, -0.01, -0.07, -0.13, -0.19, -0.25, -0.31].map((ox) => ({ ox, oy: 0.3, size: 0.07, z: 36, h: 3, color: '#f39c12' })),
+        { ox: -0.28, oy: 0.3, size: 0.02, z: 19, h: 17, color: '#2c3e50' },
+        { ox: -0.28, oy: 0.3, size: 0.16, z: 14, h: 5, color: '#c0392b' },
       ] as Prism[]).sort(byDepth);
     case 'FREIGHT':
       return ([
@@ -1271,10 +1272,11 @@ export function buildPreviewPicture(gridSize: number, cells: { x: number; y: num
       (c.ok ? okPath : badPath).addPoly([d.top, d.right, d.bottom, d.left], true);
     }
     const ok = okPath.detach();
-    const fill = fillPaint(color).copy();
-    fill.setAlphaf(0.5);
+    // Teinte éclaircie : reste visible même quand l'outil a la couleur de l'herbe.
+    const fill = fillPaint(shade(color, 0.55)).copy();
+    fill.setAlphaf(0.8);
     canvas.drawPath(ok, fill);
-    canvas.drawPath(ok, strokePaint('#ffffff', 1));
+    canvas.drawPath(ok, strokePaint(shade(color, -0.45), 1.6));
     const bad = fillPaint('#e74c3c').copy();
     bad.setAlphaf(0.35);
     canvas.drawPath(badPath.detach(), bad);

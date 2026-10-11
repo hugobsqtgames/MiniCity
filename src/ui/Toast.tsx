@@ -21,13 +21,16 @@ export function Toast() {
 
   const visible = toast && toast.id !== hiddenId ? toast : null;
   if (!visible) return null;
+  // Couleur selon le message : réussite (or), fête (violet), info (bleu), alerte (rouge).
+  const t = visible.text;
+  const tone = t.startsWith('🏆') ? styles.gold : /^(⚽|🎸|🎡|🧺|🎄|🎆|🎉)/u.test(t) ? styles.party : /^(↶|↷|✅)/u.test(t) ? styles.info : null;
   return (
     <Animated.View
       key={visible.id}
       entering={FadeInUp.springify().damping(16)}
       exiting={FadeOutUp.duration(180)}
       pointerEvents="none"
-      style={[styles.toast, { top: insets.top + HUD_HEIGHT + 16 }]}
+      style={[styles.toast, tone, { top: insets.top + HUD_HEIGHT + 16 }]}
     >
       <Text style={styles.text}>{visible.text}</Text>
     </Animated.View>
@@ -44,4 +47,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(192,57,43,0.92)',
   },
   text: { color: '#fff', fontSize: 14, fontWeight: '700' },
+  gold: { backgroundColor: 'rgba(183,149,11,0.95)' },
+  party: { backgroundColor: 'rgba(125,60,152,0.92)' },
+  info: { backgroundColor: 'rgba(40,116,166,0.92)' },
 });

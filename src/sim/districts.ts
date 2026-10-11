@@ -134,11 +134,12 @@ export function computeDistrictStats(tiles: Tile[], size: number, maps: CityMaps
     a.fx += t.x;
     a.fy += t.y;
     a.value += Math.max(0, t.value);
-    a.pollution += maps.pollution[i];
     if (t.type === 'R') a.population += RESIDENTS[t.density];
     else a.jobs += t.type === 'C' ? JOBS_C[t.density] : JOBS_I[t.density];
     if (t.type !== 'I') {
+      // Criminalité et pollution mesurées là où l'on vit et travaille au contact du public.
       a.crime += maps.crime[i] * 100;
+      a.pollution += maps.pollution[i];
       a.cN++;
       const h = localHappiness(t, i, maps, cov);
       if (h >= 0) {
@@ -153,7 +154,7 @@ export function computeDistrictStats(tiles: Tile[], size: number, maps: CityMaps
       ...a,
       happiness: hN ? Math.round(a.happiness / hN) : 50,
       crime: cN ? Math.round(a.crime / cN) : 0,
-      pollution: Math.round(Math.min(100, (a.pollution / a.built) * 2)),
+      pollution: cN ? Math.round(Math.min(100, (a.pollution / cN) * 2)) : 0,
       value: Math.round(a.value / a.built),
       fx: Math.round(a.fx / a.built),
       fy: Math.round(a.fy / a.built),

@@ -2,10 +2,11 @@
 
 City-builder isométrique (vibes SimCity 2000) pour mobile, **100 % hors ligne**, jouable dans **Expo Go**.
 
-![Maquettes v4](docs/maquettes/planche-v4.jpg)
+![Maquettes v5](docs/maquettes/planche-v5.jpg)
 
 <details><summary>Maquettes précédentes</summary>
 
+![Maquettes v4](docs/maquettes/planche-v4.jpg)
 ![Maquettes v3](docs/maquettes/planche-v3.png)
 ![Maquettes v2](docs/maquettes/planche-v2.png)
 ![Maquettes v1](docs/maquettes/planche.png)
@@ -56,6 +57,27 @@ Un **tutoriel** guide les premiers pas (rue → maisons → centrale → eau →
 13. **Qualité automatique** : la fluidité est mesurée et la densité de PNJ s'adapte. Tablette et paysage
     gérés (menu en panneau latéral).
 
+### Nouveautés de la v5
+
+14. **Énergies** : charbon (pollue), éoliennes (meilleures l'hiver), solaire (deux fois moins l'hiver), nucléaire
+    (débloqué à 4 000 habitants, énorme production… et risque d'accident qui contamine la zone pendant des années).
+    Chaque centrale produit des MW ; si la production ne suffit pas, les quartiers les plus éloignés sont délestés.
+15. **Port et gare de fret** : au-delà de 1 500 habitants, les usines doivent exporter. Le port se construit au bord
+    de l'eau ; les camions vont des usines au port.
+16. **Lieux et événements** : marché, fête foraine (grande roue qui tourne), salle de concert, stade. Matchs, concerts,
+    festival d'été, marché de Noël en décembre, feu d'artifice du 14 juillet ; foules de spectateurs ; on peut
+    organiser un événement depuis la fiche d'un lieu.
+17. **Saisons et météo** : neige l'hiver (chasse-neige si le budget transports est ≥ 80 %, sinon la ville est
+    paralysée), automne roux, canicule (incendies), pluie, orage avec éclairs, brouillard, ombres de nuages.
+18. **Quartiers nommés** (Belle-Rive, Les Forges…) avec satisfaction, criminalité, pollution et valeur par quartier.
+19. **Conseillers** : ils expliquent les problèmes et leurs causes (« L'avenue (18, 20) est saturée : ce sont surtout
+    des habitants de Mont-Vert qui vont travailler à Haut-Bois ») et emmènent la caméra sur place.
+20. **Arbre de défis** façon Minecraft : 69 défis en 8 branches (croissance, énergie, services, transports,
+    économie, environnement, culture, mandat), avec récompenses.
+21. **Reconstruction** : un bâtiment détruit garde son zonage et se reconstruit en priorité.
+22. **Mini-carte**, **zonage en rectangle** et **routes droites** (aperçu et coût pendant le glisser),
+    **3 emplacements de sauvegarde** avec aperçu, **accessibilité** (taille du texte, palette daltonienne, vibrations).
+
 ## Architecture
 
 ```
@@ -67,7 +89,7 @@ src/store/    Zustand (useGameStore, annuler/rétablir) + persistance AsyncStora
 src/hooks/    game loop (1 tick = 1 mois = 2 s), autoSave (15 s + arrière-plan), qualité automatique
 src/audio/    sons et musique hors ligne (expo-audio)
 src/ui/       HUD, barre d'outils, commandes de carte, menu à onglets, graphiques, tutoriel, fiches
-src/__tests__ tests jest (moteur, simulation, outils, sauvegarde, PNJ)
+src/__tests__ tests jest (moteur, simulation, outils, sauvegarde, PNJ, énergie, événements, conseillers, défis…)
 ```
 
 - **Rendu** : la carte est enregistrée en `SkPicture` par blocs de 10×10 tuiles (sol, ombres, bâtiments, lumières).
