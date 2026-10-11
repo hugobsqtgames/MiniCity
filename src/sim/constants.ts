@@ -217,7 +217,7 @@ export const PLANT_POLLUTION: Record<PlantType, number> = { POWER: 22, WIND: 0, 
 /** Population nécessaire pour construire une centrale nucléaire. */
 export const NUCLEAR_UNLOCK = 4000;
 /** Consommation par niveau de densité, et forfaits des équipements. */
-export const POWER_USE = { R: 1, C: 1.6, I: 3, lot: 0.3, service: 3, water: 4, venue: 6, logistics: 6, monument: 8 } as const;
+export const POWER_USE = { R: 1, C: 1.6, I: 3, lot: 0, service: 3, water: 4, venue: 6, logistics: 6, monument: 8 } as const;
 
 // ---------------------------------------------------------------------------
 // Logistique : exporter la production industrielle

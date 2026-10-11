@@ -18,12 +18,12 @@ export const HUD_HEIGHT = 124;
 function DemandBar({ label, value, color }: { label: string; value: number; color: string }) {
   const v = useSharedValue(value);
   useEffect(() => {
-    v.value = withSpring(value, { damping: 18, stiffness: 120 });
+    v.set(withSpring(value, { damping: 18, stiffness: 120 }));
   }, [value, v]);
 
   const fill = useAnimatedStyle(() => {
-    const h = Math.min(1, Math.abs(v.value)) * (BAR_HEIGHT / 2);
-    return v.value >= 0 ? { height: h, bottom: BAR_HEIGHT / 2, opacity: 1 } : { height: h, top: BAR_HEIGHT / 2, opacity: 0.55 };
+    const h = Math.min(1, Math.abs(v.get())) * (BAR_HEIGHT / 2);
+    return v.get() >= 0 ? { height: h, bottom: BAR_HEIGHT / 2, opacity: 1 } : { height: h, top: BAR_HEIGHT / 2, opacity: 0.55 };
   });
 
   return (
@@ -32,10 +32,13 @@ function DemandBar({ label, value, color }: { label: string; value: number; colo
         <Animated.View style={[styles.barFill, { backgroundColor: color }, fill]} />
         <View style={styles.barZero} />
       </View>
-      <Text style={[styles.barLabel, { color }]}>{label}</Text>
+      <Text maxScale={1} style={[styles.barLabel, { color }]}>{label}</Text>
     </View>
   );
 }
+
+/** Le montant rétrécit quand il s'allonge (adjustsFontSizeToFit n'existe pas sur le web). */
+const moneySize = (text: string) => (text.length > 13 ? 20 : text.length > 11 ? 24 : 30);
 
 export function Hud({ onOpenMenu }: { onOpenMenu: () => void }) {
   const insets = useSafeAreaInsets();
@@ -62,36 +65,41 @@ export function Hud({ onOpenMenu }: { onOpenMenu: () => void }) {
       <Glass intensity={45} style={styles.glass}>
         <View style={styles.left}>
           <View style={styles.row}>
-            <Text style={[styles.money, treasury < 0 && { color: theme.negative }]} numberOfLines={1} adjustsFontSizeToFit>
+            <Text
+              maxScale={1}
+              style={[styles.money, { fontSize: moneySize(formatMoney(treasury)) }, treasury < 0 && { color: theme.negative }]}
+              numberOfLines={1}
+              adjustsFontSizeToFit
+            >
               {formatMoney(treasury)}
             </Text>
-            <Text style={[styles.delta, { color: net >= 0 ? theme.positive : theme.negative }]}>
+            <Text maxScale={1.05} style={[styles.delta, { color: net >= 0 ? theme.positive : theme.negative }]}>
               {net >= 0 ? '+' : ''}
               {formatMoney(net)}/m
             </Text>
           </View>
           <View style={styles.row}>
-            <Text style={styles.stat}>👨‍👩‍👧‍👦 {formatNumber(population)}</Text>
-            <Text style={styles.stat} accessibilityLabel={`${formatDate(month)}, ${season.label}, ${WEATHER_LABELS[weather].label}`}>
+            <Text maxScale={1.1} style={styles.stat}>👨‍👩‍👧‍👦 {formatNumber(population)}</Text>
+            <Text maxScale={1.1} style={styles.stat} accessibilityLabel={`${formatDate(month)}, ${season.label}, ${WEATHER_LABELS[weather].label}`}>
               {weather === 'clear' ? season.icon : WEATHER_LABELS[weather].icon} {formatDate(month)}
             </Text>
-            <Text style={[styles.stat, { color: mood >= 60 ? theme.positive : mood >= 40 ? theme.text : theme.negative }]}>
+            <Text maxScale={1.1} style={[styles.stat, { color: mood >= 60 ? theme.positive : mood >= 40 ? theme.text : theme.negative }]}>
               {mood >= 60 ? '😊' : mood >= 40 ? '😐' : '😠'} {mood}%
             </Text>
           </View>
           <View style={styles.row}>
             <Pressable onPress={togglePause} style={styles.chip} hitSlop={6}>
-              <Text style={styles.chipText}>{paused ? '▶︎' : '❚❚'}</Text>
+              <Text maxScale={1.1} style={styles.chipText}>{paused ? '▶︎' : '❚❚'}</Text>
             </Pressable>
             <Pressable onPress={cycleSpeed} style={[styles.chip, paused && styles.chipDim]} hitSlop={6}>
-              <Text style={styles.chipText}>{'▸'.repeat(speed)} {speed}×</Text>
+              <Text maxScale={1.1} style={styles.chipText}>{'▸'.repeat(speed)} {speed}×</Text>
             </Pressable>
             <Pressable onPress={onOpenMenu} style={styles.chip} hitSlop={6}>
-              <Text style={styles.chipText}>⚙︎ Menu</Text>
+              <Text maxScale={1.1} style={styles.chipText}>⚙︎ Menu</Text>
             </Pressable>
             {cityEvents.length > 0 && (
               <Pressable onPress={() => openMenu('events')} style={[styles.chip, styles.chipEvent]} hitSlop={6} accessibilityLabel="Événements en cours">
-                <Text style={styles.chipText}>
+                <Text maxScale={1.1} style={styles.chipText}>
                   {EVENT_LABELS[cityEvents[0].kind].icon}
                   {cityEvents.length > 1 ? ` ${cityEvents.length}` : ''}
                 </Text>

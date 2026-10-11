@@ -100,6 +100,7 @@ export function TileInfo() {
   const clear = useGameStore((s) => s.setTool);
   const funding = useGameStore((s) => s.funding);
   const maps = useGameStore((s) => s.maps);
+  const stats = useGameStore((s) => s.stats);
   const month = useGameStore((s) => s.month);
   const forced = useGameStore((s) => s.forcedEvents);
   const cityEvents = useGameStore((s) => s.cityEvents);
@@ -149,7 +150,18 @@ export function TileInfo() {
       lines.push(`Entretien ${formatMoney(UPKEEP[t.type] ?? 0)}/mois`);
     } else if (isLogistics(t.type)) {
       lines.push(`Exporte la production de ${formatNumber(LOGISTICS_CAPACITY[t.type])} emplois industriels`);
-      lines.push('Les usines doivent être reliées par la route');
+      const nearRoad = [
+        [1, 0],
+        [-1, 0],
+        [0, 1],
+        [0, -1],
+      ].some(([dx, dy]) => {
+        const n = tiles[(t.y + dy) * size + t.x + dx];
+        return t.x + dx >= 0 && t.x + dx < size && n && isRoadType(n.type);
+      });
+      if (!nearRoad) lines.push('⚠️ Aucune route : reliez-le au réseau routier');
+      else if (stats.exports.connected === 0) lines.push('⚠️ Aucune usine reliée par la route');
+      else lines.push(`🚚 ${formatNumber(Math.min(stats.exports.capacity, stats.exports.connected))} / ${formatNumber(stats.exports.jobs)} emplois industriels exportent`);
       lines.push(t.powered ? '⚡ En service' : '⚠️ Hors service : pas de courant');
       lines.push(`Entretien ${formatMoney(UPKEEP[t.type] ?? 0)}/mois`);
     } else if (isVenue(t.type)) {
@@ -180,7 +192,7 @@ export function TileInfo() {
     }
     const venue = isVenue(t.type) && t.powered ? VENUE_TEXT[t.type]![1] : null;
     return { title: NAMES[t.type], lines, x: t.x, y: t.y, venue, planned: forced.some((f) => f.x === t.x && f.y === t.y) };
-  }, [selected, tiles, size, funding, maps, month, cityEvents, forced]);
+  }, [selected, tiles, size, funding, maps, month, cityEvents, forced, stats]);
 
   if (!info) return null;
   return (

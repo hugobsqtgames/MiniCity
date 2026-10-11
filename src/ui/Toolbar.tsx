@@ -10,7 +10,10 @@ import { Text } from './Text';
 import { formatMoney, formatNumber, theme } from './theme';
 import { Glass } from './Glass';
 
-export const TOOLBAR_HEIGHT = 112;
+export const TOOLBAR_HEIGHT = 120;
+
+/** Familles d'outils, dans l'ordre de la barre. */
+const GROUPS = TOOLS.map((t) => t.group).filter((g, i, all) => all.indexOf(g) === i);
 
 const GROUP_LABELS: Record<ToolGroup, string> = {
   base: 'Outils',
@@ -26,12 +29,12 @@ const GROUP_LABELS: Record<ToolGroup, string> = {
 function ToolButton({ tool, active, locked, onPress }: { tool: ToolDef; active: boolean; locked: string | null; onPress: () => void }) {
   const lift = useSharedValue(active ? 1 : 0);
   useEffect(() => {
-    lift.value = withSpring(active ? 1 : 0, { damping: 14, stiffness: 220 });
+    lift.set(withSpring(active ? 1 : 0, { damping: 14, stiffness: 220 }));
   }, [active, lift]);
 
   // L'outil sélectionné se surélève et grossit légèrement.
   const style = useAnimatedStyle(() => ({
-    transform: [{ translateY: -14 * lift.value }, { scale: 1 + 0.08 * lift.value }],
+    transform: [{ translateY: -8 * lift.get() }, { scale: 1 + 0.06 * lift.get() }],
   }));
 
   return (
@@ -77,22 +80,31 @@ export function Toolbar() {
     <View pointerEvents="box-none" style={[styles.wrap, { bottom: insets.bottom + 8 }, width >= 700 && styles.wrapWide]}>
       <Glass intensity={45} style={styles.glass}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.scroll}>
-          {TOOLS.map((t, i) => (
-            <View key={t.id} style={styles.item}>
-              {/* Séparateur entre familles d'outils : base | zones | réseaux | services. */}
-              {i > 0 && TOOLS[i - 1].group !== t.group && <View style={styles.divider} />}
-              {(i === 0 || TOOLS[i - 1].group !== t.group) && <Text style={styles.groupLabel} numberOfLines={1}>{GROUP_LABELS[t.group]}</Text>}
-              <ToolButton
-                tool={t}
-                active={t.id === tool}
-                locked={lockOf(t)}
-                onPress={() => {
-                  const lock = lockOf(t);
-                  if (lock === 'construit') showToast(`${t.icon} ${t.label} : un seul exemplaire par ville`);
-                  else if (lock) showToast(`🔒 ${t.label} : débloqué à ${formatNumber(needOf(t))} habitants`);
-                  else setTool(t.id);
-                }}
-              />
+          {GROUPS.map((g, gi) => (
+            <View key={g} style={styles.group}>
+              {gi > 0 && <View style={styles.divider} />}
+              <View>
+                {/* Étiquette de la famille d'outils, au-dessus de ses boutons. */}
+                <Text style={styles.groupLabel} numberOfLines={1}>
+                  {GROUP_LABELS[g]}
+                </Text>
+                <View style={styles.row}>
+                  {TOOLS.filter((t) => t.group === g).map((t) => (
+                    <ToolButton
+                      key={t.id}
+                      tool={t}
+                      active={t.id === tool}
+                      locked={lockOf(t)}
+                      onPress={() => {
+                        const lock = lockOf(t);
+                        if (lock === 'construit') showToast(`${t.icon} ${t.label} : un seul exemplaire par ville`);
+                        else if (lock) showToast(`🔒 ${t.label} : débloqué à ${formatNumber(needOf(t))} habitants`);
+                        else setTool(t.id);
+                      }}
+                    />
+                  ))}
+                </View>
+              </View>
             </View>
           ))}
         </ScrollView>
@@ -110,13 +122,11 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: theme.glassBorder,
   },
-  scroll: { paddingHorizontal: 10, paddingTop: 22, paddingBottom: 10, gap: 8 },
-  item: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  scroll: { paddingHorizontal: 10, paddingTop: 8, paddingBottom: 10, gap: 8 },
+  group: { flexDirection: 'row', alignItems: 'flex-end', gap: 8 },
+  row: { flexDirection: 'row', gap: 8, paddingTop: 10 },
   groupLabel: {
-    position: 'absolute',
-    top: -19,
-    left: 4,
-    width: 220,
+    marginLeft: 4,
     color: theme.textDim,
     fontSize: 10,
     fontWeight: '800',

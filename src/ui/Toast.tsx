@@ -11,6 +11,8 @@ import { HUD_HEIGHT } from './Hud';
 export function Toast() {
   const insets = useSafeAreaInsets();
   const toast = useGameStore((s) => s.toast);
+  // Pas de toast par-dessus le menu ou l'arbre de défis (il réapparaît à leur fermeture s'il est récent).
+  const covered = useGameStore((s) => s.menuTab !== null || s.challengesOpen);
   const [hiddenId, setHiddenId] = useState(0);
 
   useEffect(() => {
@@ -20,7 +22,7 @@ export function Toast() {
   }, [toast]);
 
   const visible = toast && toast.id !== hiddenId ? toast : null;
-  if (!visible) return null;
+  if (!visible || covered) return null;
   // Couleur selon le message : réussite (or), fête (violet), info (bleu), alerte (rouge).
   const t = visible.text;
   const tone = t.startsWith('🏆') ? styles.gold : /^(⚽|🎸|🎡|🧺|🎄|🎆|🎉)/u.test(t) ? styles.party : /^(↶|↷|✅)/u.test(t) ? styles.info : null;

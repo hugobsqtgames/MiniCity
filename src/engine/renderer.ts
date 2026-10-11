@@ -1124,14 +1124,7 @@ export function buildLightsPicture(tiles: Tile[], gridSize: number, b: Block) {
       // Les lumières déjà posées derrière ce bâtiment sont masquées par sa silhouette.
       flush();
       const mask = Skia.PathBuilder.Make();
-      for (const prism of prisms) {
-        const pc = prismCenter(center, prism);
-        const z = prism.z ?? 0;
-        const base = footprint(pc, prism.size, z);
-        const top = footprint(pc, prism.size, z + prism.h);
-        const roof = prism.roof === 'hip' ? up(pc, z + prism.h + (prism.roofHeight ?? 8)) : top.top;
-        mask.addPoly([base.left, base.bottom, base.right, top.right, roof, top.left], true);
-      }
+      addSilhouette(mask, prisms, center);
       canvas.drawPath(mask.detach(), eraser);
       if (t.fire > 0) return;
       for (const prism of prisms) {
@@ -1166,6 +1159,57 @@ export function buildLightsPicture(tiles: Tile[], gridSize: number, b: Block) {
     });
     flush();
   }, worldRect(gridSize));
+}
+
+/** Silhouette (contour plein) de prismes : sert de masque d'occlusion. */
+function addSilhouette(mask: SkPathBuilder, prisms: Prism[], center: Point) {
+  for (const prism of prisms) {
+    const pc = prismCenter(center, prism);
+    const z = prism.z ?? 0;
+    const base = footprint(pc, prism.size, z);
+    const top = footprint(pc, prism.size, z + prism.h);
+    const roof = prism.roof === 'hip' ? up(pc, z + prism.h + (prism.roofHeight ?? 8)) : top.top;
+    mask.addPoly([base.left, base.bottom, base.right, top.right, roof, top.left], true);
+    if (prism.blob) {
+      const c = up(pc, z + prism.h + prism.blob.r * 0.7);
+      mask.addCircle(c.x, c.y, prism.blob.r);
+    }
+  }
+}
+
+/**
+ * Masque d'occlusion d'un objet animé (pales d'éolienne, grande roue) : les
+ * silhouettes des bâtiments situés DEVANT lui, dessinées en mode Clear. Rejoué
+ * juste après l'objet dans un calque isolé, il efface ce qui doit être caché.
+ */
+export function buildOccluderPicture(tiles: Tile[], gridSize: number, vx: number, vy: number, radius = 5) {
+  const origin = getOrigin(gridSize);
+  return createPicture((canvas) => {
+    const eraser = Skia.Paint();
+    eraser.setBlendMode(BlendMode.Clear);
+    const mask = Skia.PathBuilder.Make();
+    for (let y = Math.max(0, vy - radius); y <= Math.min(gridSize - 1, vy + radius); y++) {
+      for (let x = Math.max(0, vx - radius); x <= Math.min(gridSize - 1, vx + radius); x++) {
+        if (x + y <= vx + vy || (x === vx && y === vy)) continue;
+        const t = tiles[y * gridSize + x];
+        const prisms = buildingFor(t);
+        if (prisms.length) addSilhouette(mask, prisms, tileCenter(t, origin));
+      }
+    }
+    canvas.drawPath(mask.detach(), eraser);
+  }, worldRect(gridSize));
+}
+
+/** Masque de neige : le sol (herbe, parcelles, plages…), routes comprises ou non. */
+export function buildSnowMask(tiles: Tile[], gridSize: number, roads: boolean): SkPath {
+  const origin = getOrigin(gridSize);
+  const p = Skia.PathBuilder.Make();
+  for (const t of tiles) {
+    if (t.type === 'LAKE' || (!roads && isRoadType(t.type))) continue;
+    const d = tileDiamond(t.x, t.y, origin);
+    p.addPoly([d.top, d.right, d.bottom, d.left], true);
+  }
+  return p.detach();
 }
 
 /** Liste des blocs d'une carte, dans l'ordre de dessin (lignes de blocs puis colonnes). */

@@ -79,7 +79,8 @@ export type CitizenInfo = {
 /** Onglets du menu (null = fermé). */
 export type MenuTab = 'advisors' | 'city' | 'districts' | 'budget' | 'laws' | 'events' | 'news' | 'charts' | 'settings';
 
-type Snapshot = { tiles: Tile[]; treasury: number };
+/** Une action à annuler : les tuiles modifiées (avant / après) et son coût. */
+type UndoAction = { cells: { i: number; before: Tile; after: Tile }[]; cost: number };
 const UNDO_LIMIT = 40;
 
 type GameState = {
@@ -94,6 +95,8 @@ type GameState = {
   /** Mois écoulés depuis Jan 2024. */
   month: number;
   cityName: string;
+  /** Ville de démonstration : les défis n'y comptent pas. */
+  isDemo: boolean;
   taxes: Taxes;
   funding: Funding;
   ordinances: Ordinances;
@@ -125,6 +128,8 @@ type GameState = {
   challenges: Record<string, number>;
   menuTab: MenuTab | null;
   challengesOpen: boolean;
+  /** Demande de confirmation en cours (actions destructrices). */
+  confirm: { title: string; message: string; label: string; onConfirm: () => void } | null;
 
   tool: ToolId;
   selected: { x: number; y: number } | null;
@@ -133,8 +138,8 @@ type GameState = {
   /** Dernière tuile peinte pendant un glissé (pour combler les trous). */
   stroke: { x: number; y: number; warned: boolean } | null;
   drag: Drag | null;
-  past: Snapshot[];
-  future: Snapshot[];
+  past: UndoAction[];
+  future: UndoAction[];
 
   setTool: (tool: ToolId) => void;
   tapTile: (x: number, y: number) => void;
@@ -161,6 +166,8 @@ type GameState = {
   focusOn: (x: number, y: number, view?: DataView) => void;
   openMenu: (tab: MenuTab | null) => void;
   openChallenges: (open: boolean) => void;
+  askConfirm: (title: string, message: string, label: string, onConfirm: () => void) => void;
+  closeConfirm: () => void;
   setCityName: (name: string) => void;
   newCity: (size?: number) => void;
   loadDemoCity: () => void;
@@ -183,7 +190,7 @@ function adviceFor(tiles: Tile[], size: number, a: Analysis, policy: Policy, tre
   }
 }
 
-function freshCity(tiles: Tile[], size: number, treasury: number, name = randomCityName()) {
+function freshCity(tiles: Tile[], size: number, treasury: number, name = randomCityName(), isDemo = false) {
   const powered = applyPower(tiles, size, 0);
   const a = analyzeCity(powered, size, undefined, 0);
   return {
@@ -192,6 +199,7 @@ function freshCity(tiles: Tile[], size: number, treasury: number, name = randomC
     treasury,
     month: 0,
     cityName: name,
+    isDemo,
     ...DEFAULT_POLICY_STATE,
     demand: INITIAL_DEMAND,
     stats: a.stats,
@@ -206,8 +214,8 @@ function freshCity(tiles: Tile[], size: number, treasury: number, name = randomC
     drag: null,
     history: EMPTY_HISTORY,
     news: [] as NewsEntry[],
-    past: [] as Snapshot[],
-    future: [] as Snapshot[],
+    past: [] as UndoAction[],
+    future: [] as UndoAction[],
     lastDisaster: null,
     pendingDisaster: null,
     weather: 'clear' as Weather,
@@ -254,18 +262,56 @@ export const useGameStore = create<GameState>()((set, get) => {
     p.catch(() => {});
   };
 
+  /** Action en cours d'enregistrement (glissé) : toutes ses tuiles forment une seule entrée d'annulation. */
+  let pending: UndoAction | null = null;
+  const pushUndo = (action: UndoAction) => {
+    if (!action.cells.length) return;
+    set({ past: [...get().past.slice(-(UNDO_LIMIT - 1)), action], future: [] });
+  };
+
   /** Applique l'outil courant sur une tuile ; renvoie la raison d'un refus éventuel. */
   const buildAt = (x: number, y: number, recordUndo: boolean, quiet = false): string | null => {
     const s = get();
     const res = applyTool(s.tiles, s.gridSize, s.tool, x, y, { funds: s.treasury, population: s.stats.population, month: s.month });
     if (!res.ok) return res.reason || null;
-    const undo = recordUndo ? { past: [...s.past.slice(-(UNDO_LIMIT - 1)), { tiles: s.tiles, treasury: s.treasury }], future: [] } : {};
-    set({ tiles: res.tiles, treasury: s.treasury - res.cost, stats: quickStats(s.stats, res.tiles), ...undo });
+    const i = y * s.gridSize + x;
+    const cell = { i, before: s.tiles[i], after: res.tiles[i] };
+    set({ tiles: res.tiles, treasury: s.treasury - res.cost, stats: quickStats(s.stats, res.tiles) });
+    if (pending) {
+      pending.cells.push(cell);
+      pending.cost += res.cost;
+    } else if (recordUndo) pushUndo({ cells: [cell], cost: res.cost });
     if (!quiet) {
       haptic('select');
       playSfx(s.tool === 'bulldoze' ? 'bulldoze' : 'build');
     }
     return null;
+  };
+
+  /**
+   * Annuler / rétablir par différences : seules les tuiles posées par l'action sont
+   * remises dans leur état précédent (si elles n'ont pas changé entre-temps). La
+   * croissance de la ville et les mois écoulés ne sont jamais effacés.
+   */
+  const replay = (action: UndoAction, direction: 'undo' | 'redo'): number => {
+    const s = get();
+    const tiles = s.tiles.slice();
+    let applied = 0;
+    const cells = direction === 'undo' ? [...action.cells].reverse() : action.cells;
+    for (const c of cells) {
+      const from = direction === 'undo' ? c.after : c.before;
+      const to = direction === 'undo' ? c.before : c.after;
+      const cur = tiles[c.i];
+      if (cur.type !== from.type || cur.lake !== from.lake) continue;
+      tiles[c.i] = { ...to, fire: 0, flood: 0, garbage: 0, rad: cur.rad };
+      applied++;
+    }
+    if (!applied) return 0;
+    const next = applyPower(tiles, s.gridSize, s.month);
+    const share = applied / cells.length;
+    const money = Math.round(action.cost * share);
+    set({ tiles: next, treasury: s.treasury + (direction === 'undo' ? money : -money), stats: quickStats(s.stats, next) });
+    return applied;
   };
 
   const persistSettings = () => saveSettings(get().settings).catch(() => {});
@@ -284,6 +330,7 @@ export const useGameStore = create<GameState>()((set, get) => {
     toast: null,
     menuTab: null,
     challengesOpen: false,
+    confirm: null,
 
     setTool: (tool) => set({ tool, selected: null, citizen: null }),
 
@@ -310,7 +357,7 @@ export const useGameStore = create<GameState>()((set, get) => {
         return;
       }
       // Tout le glissé ne forme qu'une seule action à annuler.
-      set({ past: [...s.past.slice(-(UNDO_LIMIT - 1)), { tiles: s.tiles, treasury: s.treasury }], future: [] });
+      pending = { cells: [], cost: 0 };
       const reason = buildAt(x, y, false);
       if (reason) get().showToast(reason);
       set({ stroke: { x, y, warned: !!reason } });
@@ -339,7 +386,8 @@ export const useGameStore = create<GameState>()((set, get) => {
       const s = get();
       if (s.drag) {
         const cells = dragTiles(s.drag).filter(([x, y]) => x >= 0 && y >= 0 && x < s.gridSize && y < s.gridSize);
-        set({ drag: null, past: [...s.past.slice(-(UNDO_LIMIT - 1)), { tiles: s.tiles, treasury: s.treasury }], future: [] });
+        set({ drag: null });
+        pending = { cells: [], cost: 0 };
         let placed = 0;
         let broke = false;
         let firstReason: string | null = null;
@@ -354,50 +402,46 @@ export const useGameStore = create<GameState>()((set, get) => {
             break;
           } else firstReason ??= reason;
         }
+        const action = pending;
+        pending = null;
+        pushUndo(action);
         if (placed > 0) {
           haptic('select');
           playSfx(s.tool === 'bulldoze' ? 'bulldoze' : 'build');
-        } else {
-          const p = get().past;
-          set({ past: p.slice(0, -1) });
         }
         if (broke) get().showToast(`Fonds insuffisants 💸 — ${placed} tuile(s) posée(s)`);
         else if (!placed && firstReason) get().showToast(firstReason);
         return;
       }
-      // Glissé sans aucun effet : on retire l'entrée d'annulation inutile.
-      const last = s.past[s.past.length - 1];
-      if (last && last.tiles === s.tiles) set({ past: s.past.slice(0, -1) });
+      if (pending) {
+        const action = pending;
+        pending = null;
+        pushUndo(action);
+      }
       set({ stroke: null });
     },
 
     undo: () => {
       const s = get();
-      const prev = s.past[s.past.length - 1];
-      if (!prev) return;
-      set({
-        tiles: prev.tiles,
-        treasury: prev.treasury,
-        past: s.past.slice(0, -1),
-        future: [...s.future, { tiles: s.tiles, treasury: s.treasury }],
-        stats: quickStats(s.stats, prev.tiles),
-      });
-      get().showToast('↶ Action annulée (remboursée)');
+      const action = s.past[s.past.length - 1];
+      if (!action) return;
+      const applied = replay(action, 'undo');
+      set({ past: get().past.slice(0, -1), future: applied ? [...get().future, action] : get().future });
+      get().showToast(applied ? '↶ Action annulée (remboursée)' : '↶ Impossible : la ville a changé depuis');
       playSfx('click');
     },
 
     redo: () => {
       const s = get();
-      const next = s.future[s.future.length - 1];
-      if (!next) return;
-      set({
-        tiles: next.tiles,
-        treasury: next.treasury,
-        future: s.future.slice(0, -1),
-        past: [...s.past, { tiles: s.tiles, treasury: s.treasury }],
-        stats: quickStats(s.stats, next.tiles),
-      });
-      get().showToast('↷ Action rétablie');
+      const action = s.future[s.future.length - 1];
+      if (!action) return;
+      if (s.treasury < action.cost) {
+        get().showToast('Fonds insuffisants 💸');
+        return;
+      }
+      const applied = replay(action, 'redo');
+      set({ future: get().future.slice(0, -1), past: applied ? [...get().past, action] : get().past });
+      get().showToast(applied ? '↷ Action rétablie' : '↷ Impossible : la ville a changé depuis');
       playSfx('click');
     },
 
@@ -452,8 +496,15 @@ export const useGameStore = create<GameState>()((set, get) => {
       // Défis réussis : récompense, fanfare et annonce.
       let treasury = res.treasury;
       const done = { ...s.challenges };
-      const won = newlyCompleted(challengeContext(res.tiles, res.stats, treasury, month, c, policy), done);
+      // La ville de démo est déjà construite : ses défis ne comptent pas.
+      const won = s.isDemo ? [] : newlyCompleted(challengeContext(res.tiles, res.stats, treasury, month, c, policy), done);
       const news = res.events.news.map((n) => ({ ...n, month }));
+      // Événement organisé mais impossible (lieu hors service ou rasé) : remboursé.
+      const cancelled = s.forcedEvents.filter((f) => !res.cityEvents.some((e) => e.x === f.x && e.y === f.y));
+      if (cancelled.length) {
+        treasury += cancelled.length * EVENT_COST;
+        news.push({ icon: '↩️', text: `Événement annulé (lieu hors service) : ${cancelled.length * EVENT_COST} $ remboursés.`, month });
+      }
       for (const w of won) {
         done[w.id] = month;
         treasury += w.reward;
@@ -478,7 +529,8 @@ export const useGameStore = create<GameState>()((set, get) => {
         stats: res.stats,
         maps: res.maps,
         analysis: res.analysis,
-        advice: adviceFor(res.tiles, s.gridSize, res.analysis, policy, treasury, net, month),
+        // Les conseillers coûtent cher à calculer : tous les 3 mois, ou en continu si leur onglet est ouvert.
+        advice: month % 3 === 0 || s.menuTab === 'advisors' || disaster ? adviceFor(res.tiles, s.gridSize, res.analysis, policy, treasury, net, month) : s.advice,
         lastIncome: res.income,
         lastExpenses: res.expenses,
         month,
@@ -541,13 +593,20 @@ export const useGameStore = create<GameState>()((set, get) => {
       focusTile(x, y, 1.1);
       set({ menuTab: null, ...(view ? { dataView: view } : {}) });
     },
-    openMenu: (tab) => set({ menuTab: tab }),
+    openMenu: (tab) => {
+      const s = get();
+      if (tab === 'advisors' && s.analysis) {
+        set({ menuTab: tab, advice: adviceFor(s.tiles, s.gridSize, s.analysis, s.policy(), s.treasury, s.lastIncome - s.lastExpenses, s.month) });
+      } else set({ menuTab: tab });
+    },
     openChallenges: (open) => set({ challengesOpen: open }),
+    askConfirm: (title, message, label, onConfirm) => set({ confirm: { title, message, label, onConfirm } }),
+    closeConfirm: () => set({ confirm: null }),
     setCityName: (name) => set({ cityName: name.slice(0, 24) || 'Ma ville' }),
 
     newCity: (size = GRID_SIZE) =>
       set({ ...freshCity(createTerrainMap(size), size, START_FUNDS), paused: false, rotation: 0, dataView: 'none', disasters: get().disasters }),
-    loadDemoCity: () => set({ ...freshCity(createDemoMap(50), 50, 50000, 'Démoville'), paused: false, rotation: 0, dataView: 'none' }),
+    loadDemoCity: () => set({ ...freshCity(createDemoMap(50), 50, 50000, 'Démoville', true), paused: false, rotation: 0, dataView: 'none' }),
 
     hydrate: (save) => {
       if (!save) {
@@ -565,6 +624,7 @@ export const useGameStore = create<GameState>()((set, get) => {
         treasury: save.treasury,
         month: save.month,
         cityName: save.cityName,
+        isDemo: save.isDemo,
         taxes: save.taxes,
         funding: save.funding,
         ordinances: save.ordinances,
@@ -580,8 +640,9 @@ export const useGameStore = create<GameState>()((set, get) => {
         maps: a.maps,
         analysis: a,
         advice: adviceFor(tiles, save.gridSize, a, policy, save.treasury, 0, save.month),
-        cityEvents: [],
-        forcedEvents: [],
+        cityEvents: save.cityEvents,
+        forcedEvents: save.forcedEvents,
+        weather: save.weather,
         selected: null,
         citizen: null,
         drag: null,
@@ -616,6 +677,10 @@ export const useGameStore = create<GameState>()((set, get) => {
         cityName: s.cityName,
         counters: s.counters,
         challenges: s.challenges,
+        isDemo: s.isDemo,
+        weather: s.weather,
+        cityEvents: s.cityEvents,
+        forcedEvents: s.forcedEvents,
       };
     },
   };

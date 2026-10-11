@@ -39,6 +39,7 @@ export function ChallengeTree() {
   const taxes = useGameStore((s) => s.taxes);
   const funding = useGameStore((s) => s.funding);
   const ordinances = useGameStore((s) => s.ordinances);
+  const isDemo = useGameStore((s) => s.isDemo);
   const [selected, setSelected] = useState<string>('start');
 
   const layout = useMemo(() => layoutTree(), []);
@@ -96,6 +97,7 @@ export function ChallengeTree() {
         </Pressable>
       </View>
 
+      {isDemo && <Text style={styles.demo}>🏙️ Ville de démo : les défis ne comptent pas ici. Lancez une nouvelle ville pour les réussir.</Text>}
       <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 8 }} nestedScrollEnabled>
         <ScrollView horizontal nestedScrollEnabled showsHorizontalScrollIndicator={false}>
           <View style={{ width, height }}>
@@ -167,6 +169,7 @@ const styles = StyleSheet.create({
   progress: { flex: 1, height: 8, borderRadius: 4, backgroundColor: 'rgba(255,255,255,0.12)', overflow: 'hidden' },
   progressFill: { height: '100%', backgroundColor: '#f4d03f' },
   count: { color: theme.textDim, fontSize: 13, fontWeight: '800', fontVariant: ['tabular-nums'] },
+  demo: { color: '#f4d03f', fontSize: 13, fontWeight: '700', paddingHorizontal: 16, paddingBottom: 6 },
   close: { color: theme.textDim, fontSize: 20, fontWeight: '700', marginLeft: 4 },
   node: {
     position: 'absolute',

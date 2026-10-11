@@ -152,7 +152,8 @@ export function computeDistrictStats(tiles: Tile[], size: number, maps: CityMaps
     .filter((a) => a.built > 0)
     .map(({ hN, cN, ...a }) => ({
       ...a,
-      happiness: hN ? Math.round(a.happiness / hN) : 50,
+      // Trop peu de logements pour une mesure fiable : -1 (affiché « — »).
+      happiness: hN >= 3 ? Math.round(a.happiness / hN) : -1,
       crime: cN ? Math.round(a.crime / cN) : 0,
       pollution: cN ? Math.round(Math.min(100, (a.pollution / cN) * 2)) : 0,
       value: Math.round(a.value / a.built),

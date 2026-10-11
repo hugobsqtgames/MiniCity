@@ -5,6 +5,7 @@ import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import {
   useAnimatedReaction,
   useDerivedValue,
+  useFrameCallback,
   useSharedValue,
   withDecay,
   withSequence,
@@ -22,6 +23,7 @@ import {
   BUBBLE_MONEY,
   BUBBLE_POLLUTION,
   BUBBLE_TRAFFIC,
+  buildAgents,
   buildAgentsAsync,
   describeAgent,
   drawAgents,
@@ -33,7 +35,7 @@ import { camera as sharedCamera, focusRequest } from '../engine/cameraBridge';
 import { getOrigin, getWorldSize, gridToWorld, HALF_H, HALF_W, screenToTile, worldToGridFloat } from '../engine/iso';
 import { useMapLayers } from '../engine/mapLayers';
 import { isBuildableGround, isFacility, isPlant, isRoadType, isZone } from '../engine/map';
-import { buildCoveragePicture, buildDataPicture, buildPreviewPicture, COLORS, diamondPath, hueColor } from '../engine/renderer';
+import { buildCoveragePicture, buildDataPicture, buildOccluderPicture, buildPreviewPicture, buildSnowMask, COLORS, diamondPath, hueColor } from '../engine/renderer';
 import { fromView, pointFromView, pointToView, remapToView, RotatedTiles, toView, vectorToView } from '../engine/rotation';
 import { useDebounced } from '../hooks/useDebounced';
 import { usePerformanceGovernor } from '../hooks/usePerformanceGovernor';
@@ -182,7 +184,7 @@ function AgentsLayer({
 }
 
 /** Smog au-dessus des quartiers pollués + tornade en cours : effets animés du calque du dessus. */
-type Spinner = { kind: 'wind' | 'wheel'; x: number; y: number; seed: number };
+type Spinner = { kind: 'wind' | 'wheel'; x: number; y: number; seed: number; occ: SkPicture };
 type Burst = { x: number; y: number; big: boolean };
 
 function EffectsLayer({
@@ -208,11 +210,16 @@ function EffectsLayer({
     const t = clock.get() / 1000;
     const n = night.get();
     return createPicture((canvas) => {
-      const blades = Skia.PathBuilder.Make();
-      const rims = Skia.PathBuilder.Make();
-      const cabins = Skia.PathBuilder.Make();
+      const bladePaint = hazePaint(0.95, '#fdfefe');
+      const rim = hazePaint(0.9, '#ecf0f1');
+      rim.setStyle(PaintStyle.Stroke);
+      rim.setStrokeWidth(1.2);
+      const cabinPaint = hazePaint(0.95, '#e74c3c');
+      // Chaque objet dans son propre calque, puis effacé là où un bâtiment le cache.
       for (const sp of spinners) {
+        canvas.saveLayer();
         if (sp.kind === 'wind') {
+          const blades = Skia.PathBuilder.Make();
           const a0 = t * 2.2 + sp.seed;
           for (let k = 0; k < 3; k++) {
             const a = a0 + (k * Math.PI * 2) / 3;
@@ -222,7 +229,10 @@ function EffectsLayer({
             const ny = Math.cos(a) * 1.4;
             blades.addPoly([{ x: sp.x + nx, y: sp.y + ny }, { x: ex, y: ey }, { x: sp.x - nx, y: sp.y - ny }], true);
           }
+          canvas.drawPath(blades.detach(), bladePaint);
         } else {
+          const rims = Skia.PathBuilder.Make();
+          const cabins = Skia.PathBuilder.Make();
           const r = 17;
           rims.addCircle(sp.x, sp.y, r);
           const a0 = t * 0.35 + sp.seed;
@@ -232,14 +242,12 @@ function EffectsLayer({
             rims.lineTo(sp.x + Math.cos(a) * r, sp.y + Math.sin(a) * r);
             cabins.addRect({ x: sp.x + Math.cos(a) * r - 2.2, y: sp.y + Math.sin(a) * r, width: 4.4, height: 3.6 });
           }
+          canvas.drawPath(rims.detach(), rim);
+          canvas.drawPath(cabins.detach(), cabinPaint);
         }
+        canvas.drawPicture(sp.occ);
+        canvas.restore();
       }
-      canvas.drawPath(blades.detach(), hazePaint(0.95, '#fdfefe'));
-      const rim = hazePaint(0.9, '#ecf0f1');
-      rim.setStyle(PaintStyle.Stroke);
-      rim.setStrokeWidth(1.2);
-      canvas.drawPath(rims.detach(), rim);
-      canvas.drawPath(cabins.detach(), hazePaint(0.95, '#e74c3c'));
       // Feux d'artifice : gerbes colorées qui s'ouvrent puis retombent.
       const colors = ['#ff5e57', '#ffd32a', '#0fbcf9', '#05c46b', '#f368e0'];
       for (let b = 0; b < bursts.length; b++) {
@@ -364,24 +372,30 @@ export function IsoMapCanvas() {
   const agentTiles = useDebounced(tiles, 600);
   const issueKey = useGameStore((s) => cityIssues(s.stats, Math.max(s.taxes.R, s.taxes.C, s.taxes.I)).join(','));
   const [built, setBuilt] = useState<{ key: string; scene: AgentsScene }>({ key: '', scene: EMPTY_SCENE });
-  const wantedKey = agentsKey(agentTiles, gridSize, population, riders, agentScale, issueKey ? issueKey.split(',').map(Number) : [], `${winter}:${eventKey}`);
+  const wantedKey = agentsKey(agentTiles, gridSize, population, riders, agentScale, issueKey ? issueKey.split(',').map(Number) : [], `${winter}`);
   useEffect(() => {
     if (wantedKey === built.key) return;
     let cancelled = false;
     const issues = issueKey ? issueKey.split(',').map(Number) : [];
-    const events = eventKey ? eventKey.split(';').map((p) => ({ x: Number(p.split(',')[0]), y: Number(p.split(',')[1]) })) : [];
-    buildAgentsAsync(agentTiles, gridSize, population, riders, agentScale, issues, () => cancelled, { events, winter }).then((res) => {
+    buildAgentsAsync(agentTiles, gridSize, population, riders, agentScale, issues, () => cancelled, { winter }).then((res) => {
       if (res && !cancelled) setBuilt({ key: wantedKey, scene: res });
     });
     return () => {
       cancelled = true;
     };
-  }, [wantedKey, built.key, agentTiles, gridSize, population, riders, agentScale, issueKey, eventKey, winter]);
+  }, [wantedKey, built.key, agentTiles, gridSize, population, riders, agentScale, issueKey, winter]);
+  // Foules des événements : petite scène séparée, recalculée seulement quand les événements changent.
+  const crowds = useMemo(() => {
+    if (!eventKey || !settings.showAgents) return null;
+    const events = eventKey.split(';').map((p) => ({ x: Number(p.split(',')[0]), y: Number(p.split(',')[1]) }));
+    return buildAgents(agentTiles, gridSize, 0, 0, agentScale, [], { events, crowdOnly: true }).agents;
+  }, [eventKey, agentTiles, gridSize, agentScale, settings.showAgents]);
   const scene = useMemo(() => {
-    const full = built.scene;
+    const base = built.scene;
+    const full = crowds?.length ? { ...base, agents: [...base.agents, ...crowds] } : base;
     // Les incendies restent visibles même quand le trafic est désactivé.
     return settings.showAgents ? full : { ...EMPTY_SCENE, fires: full.fires, metro: full.metro };
-  }, [settings.showAgents, built.scene]);
+  }, [settings.showAgents, built.scene, crowds]);
   usePerformanceGovernor(settings.quality);
 
   const origin = getOrigin(gridSize);
@@ -442,15 +456,16 @@ export function IsoMapCanvas() {
       if (t.type !== 'WIND' && t.type !== 'FAIR') continue;
       const [vx, vy] = toView(t.x, t.y, gridSize, rotation);
       const p = gridToWorld(vx, vy, origin);
-      if (t.type === 'WIND') out.push({ kind: 'wind', x: p.x, y: p.y + HALF_H - 51, seed: t.x * 1.3 + t.y });
+      const occ = buildOccluderPicture(viewTiles, gridSize, vx, vy);
+      if (t.type === 'WIND') out.push({ kind: 'wind', x: p.x, y: p.y + HALF_H - 51, seed: t.x * 1.3 + t.y, occ });
       else {
         // Moyeu entre les deux pieds de la roue (décalés de -0.32 en y d'origine).
         const [ox, oy] = vectorToView(0.06, -0.32, rotation);
-        out.push({ kind: 'wheel', x: p.x + (ox - oy) * HALF_W, y: p.y + HALF_H + (ox + oy) * HALF_H - 30, seed: t.x + t.y });
+        out.push({ kind: 'wheel', x: p.x + (ox - oy) * HALF_W, y: p.y + HALF_H + (ox + oy) * HALF_H - 30, seed: t.x + t.y, occ });
       }
     }
     return out;
-  }, [tiles, gridSize, rotation, origin]);
+  }, [tiles, viewTiles, gridSize, rotation, origin]);
   const bursts = useMemo(
     () =>
       cityEvents
@@ -506,7 +521,25 @@ export function IsoMapCanvas() {
   }, [selected, gridSize, rotation, origin]);
 
   // Caméra : écran = monde * scale + (tx, ty).
-  const clock = useClock();
+  // Horloges : `realClock` (météo) tourne toujours ; `clock` (PNJ, effets) s'arrête en pause
+  // et suit la vitesse (plafonnée à 2× pour rester lisible) ; `dayClock` (jour / nuit) suit
+  // exactement le temps du jeu.
+  const realClock = useClock();
+  const clock = useSharedValue(0);
+  const dayClock = useSharedValue(0);
+  const paused = useGameStore((s) => s.paused);
+  const speed = useGameStore((s) => s.speed);
+  const pace = useSharedValue(1);
+  useEffect(() => {
+    pace.set(paused ? 0 : speed);
+  }, [paused, speed, pace]);
+  useFrameCallback((f) => {
+    'worklet';
+    const dt = Math.min(100, f.timeSincePreviousFrame ?? 16);
+    const p = pace.get();
+    clock.set(clock.get() + dt * Math.min(2, p));
+    dayClock.set(dayClock.get() + dt * p);
+  });
   // Caméra partagée (mini-carte, conseillers) : centrée sur la carte au premier affichage.
   useState(() => {
     sharedCamera.scale.set(INITIAL_SCALE);
@@ -601,7 +634,7 @@ export function IsoMapCanvas() {
   const lightLists = useMemo(() => [layers.lights], [layers]);
   const groundPic = useVisiblePicture(groundLists, layers.bounds, camera, world);
   const buildingPic = useVisiblePicture(buildingLists, layers.bounds, camera, world);
-  const night = useDerivedValue(() => (settings.dayNight ? nightAmount(clock.get()) : 0));
+  const night = useDerivedValue(() => (settings.dayNight ? nightAmount(dayClock.get()) : 0));
   const lightsPic = useVisiblePicture(lightLists, layers.bounds, camera, world, night);
   const nightOverlay = useDerivedValue(() => night.get() * 0.62);
   // Saisons : neige l'hiver, teinte rousse l'automne, herbe dorée l'été (transitions douces).
@@ -610,12 +643,23 @@ export function IsoMapCanvas() {
   const autumn = useSharedValue(season === 'autumn' ? 1 : 0);
   const summer = useSharedValue(season === 'summer' ? 1 : 0);
   useEffect(() => {
-    const cfg = { duration: 2500 };
+    // Transition plus courte en accéléré, sinon l'hiver (3 mois) n'a pas le temps d'apparaître.
+    const cfg = { duration: 1800 / speed };
     snow.set(withTiming(season === 'winter' ? (weather === 'snow' ? 1 : 0.75) : 0, cfg));
     autumn.set(withTiming(season === 'autumn' ? 1 : 0, cfg));
     summer.set(withTiming(season === 'summer' ? 1 : 0, cfg));
-  }, [season, weather, snow, autumn, summer]);
-  const snowGround = useDerivedValue(() => snow.get() * 0.82);
+  }, [season, weather, snow, autumn, summer, speed]);
+  // Neige sur le sol mais pas sur les routes déneigées (budget transports ≥ 80 %).
+  const plowed = funding.transport >= 80;
+  // (gardé au début du printemps, le temps que la neige fonde)
+  const snowMask = useMemo(() => (season === 'winter' || month % 12 === 2 ? buildSnowMask(viewTiles, gridSize, !plowed) : null), [season, month, viewTiles, gridSize, plowed]);
+  const snowPic = useDerivedValue(() => {
+    const a = snow.get() * 0.82;
+    return createPicture((canvas) => {
+      if (!snowMask || a < 0.01) return;
+      canvas.drawPath(snowMask, hazePaint(a, '#f4f8fb'));
+    }, { x: 0, y: 0, ...world });
+  }, [snowMask]);
   const snowRoofs = useDerivedValue(() => snow.get() * 0.3);
   const autumnTint = useDerivedValue(() => autumn.get() * 0.13);
   const summerTint = useDerivedValue(() => summer.get() * 0.07);
@@ -724,7 +768,7 @@ export function IsoMapCanvas() {
             <Picture picture={groundPic} />
             <Rect x={-200} y={-400} width={world.width + 400} height={world.height + 800} color="#d35400" opacity={autumnTint} blendMode="srcATop" />
             <Rect x={-200} y={-400} width={world.width + 400} height={world.height + 800} color="#f4d03f" opacity={summerTint} blendMode="srcATop" />
-            <Rect x={-200} y={-400} width={world.width + 400} height={world.height + 800} color="#f4f8fb" opacity={snowGround} blendMode="srcATop" />
+            <Picture picture={snowPic} />
             <Rect x={-200} y={-400} width={world.width + 400} height={world.height + 800} color={NIGHT_TINT} opacity={nightOverlay} />
           </Group>
         </Canvas>
@@ -768,7 +812,7 @@ export function IsoMapCanvas() {
             />
           </Group>
         </Canvas>
-        {settings.weather && <WeatherLayer weather={weather} clock={clock} />}
+        {settings.weather && <WeatherLayer weather={weather} clock={realClock} />}
       </View>
     </GestureDetector>
   );

@@ -8,7 +8,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { camera } from '../engine/cameraBridge';
 import { TILE_W, WORLD_PADDING } from '../engine/iso';
 import { RotatedTiles } from '../engine/rotation';
-import { useDebounced } from '../hooks/useDebounced';
+import { useThrottled } from '../hooks/useThrottled';
 import { useGameStore } from '../store/useGameStore';
 import { Glass } from './Glass';
 import { buildThumbPicture } from './MapThumb';
@@ -26,13 +26,12 @@ export function MiniMap() {
   const wide = screenW >= 700;
   const W = wide ? 210 : 136;
   const H = W / 2;
-  const tiles = useDebounced(
+  const tiles = useThrottled(
     useGameStore((s) => s.tiles),
-    800,
+    2500,
   );
   const size = useGameStore((s) => s.gridSize);
   const rotation = useGameStore((s) => s.rotation);
-  const setSetting = useGameStore((s) => s.setSetting);
   const [rotated] = useState(() => new RotatedTiles());
   const [collapsed, setCollapsed] = useState(false);
 
@@ -101,7 +100,7 @@ export function MiniMap() {
           </View>
         </GestureDetector>
       </Glass>
-      <Pressable onPress={() => setCollapsed(true)} onLongPress={() => setSetting('minimap', false)} hitSlop={8} style={styles.hide} accessibilityLabel="Réduire la mini-carte">
+      <Pressable onPress={() => setCollapsed(true)} hitSlop={8} style={styles.hide} accessibilityLabel="Réduire la mini-carte">
         <Text style={styles.hideText}>–</Text>
       </Pressable>
     </View>

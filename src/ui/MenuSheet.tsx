@@ -377,6 +377,7 @@ function SettingsTab({ onClose, onSaveNow, lastSavedAt, slots }: { onClose: () =
   const size = useGameStore((s) => s.gridSize);
   const cityName = useGameStore((s) => s.cityName);
   const setCityName = useGameStore((s) => s.setCityName);
+  const askConfirm = useGameStore((s) => s.askConfirm);
   const [name, setName] = useState(cityName);
   const toggles: { key: 'music' | 'sounds' | 'showAgents' | 'dayNight' | 'weather' | 'minimap'; label: string }[] = [
     { key: 'music', label: '🎵 Musique' },
@@ -418,11 +419,30 @@ function SettingsTab({ onClose, onSaveNow, lastSavedAt, slots }: { onClose: () =
       ))}
       <View style={styles.actions}>
         <Btn label="💾 Sauvegarder" onPress={() => { onSaveNow(); slots.refresh(); }} />
-        <Btn label="🏙️ Ville de démo" tone="primary" onPress={() => { loadDemoCity(); onClose(); }} />
+        <Btn
+          label="🏙️ Ville de démo"
+          tone="primary"
+          onPress={() =>
+            askConfirm('Charger la ville de démo ?', `« ${cityName} » sera remplacée dans l’emplacement ${slots.current}. Copiez-la d’abord dans un emplacement libre pour la garder.`, 'Charger la démo', () => {
+              loadDemoCity();
+              onClose();
+            })
+          }
+        />
       </View>
       <View style={styles.actions}>
         {MAP_SIZES.map((n) => (
-          <Btn key={n} label={`🌱 Nouvelle ville ${n}×${n}`} tone="danger" onPress={() => { newCity(n); onClose(); }} />
+          <Btn
+            key={n}
+            label={`🌱 Nouvelle ville ${n}×${n}`}
+            tone="danger"
+            onPress={() =>
+              askConfirm(`Nouvelle ville ${n}×${n} ?`, `« ${cityName} » sera remplacée dans l’emplacement ${slots.current}. Cette action est définitive.`, 'Recommencer', () => {
+                newCity(n);
+                onClose();
+              })
+            }
+          />
         ))}
       </View>
       <Text style={styles.hint}>« Nouvelle ville » remplace la partie de l’emplacement en cours.</Text>
@@ -473,6 +493,7 @@ function SettingsTab({ onClose, onSaveNow, lastSavedAt, slots }: { onClose: () =
 
 /** Carte d'un emplacement de sauvegarde : aperçu de la ville, population, date. */
 function SlotCard({ slot, meta, current, slots, onClose }: { slot: number; meta: SlotMeta | null; current: boolean; slots: SlotActions; onClose: () => void }) {
+  const askConfirm = useGameStore((s) => s.askConfirm);
   const thumb = useMemo(() => {
     if (!meta) return null;
     const n = meta.previewSize;
@@ -501,8 +522,25 @@ function SlotCard({ slot, meta, current, slots, onClose }: { slot: number; meta:
         )}
         <View style={styles.slotActions}>
           {!current && <Btn small label={meta ? '▶︎ Jouer' : '🌱 Commencer'} tone="primary" onPress={() => { slots.play(slot); onClose(); }} />}
-          {!current && <Btn small label="⤓ Copier ici" onPress={() => slots.saveAs(slot)} />}
-          {!current && meta && <Btn small label="🗑" tone="danger" onPress={() => slots.remove(slot)} />}
+          {!current && (
+            <Btn
+              small
+              label="⤓ Copier ici"
+              onPress={() =>
+                meta
+                  ? askConfirm('Écraser cette sauvegarde ?', `« ${meta.cityName} » (emplacement ${slot}) sera remplacée par la ville en cours.`, 'Écraser', () => slots.saveAs(slot))
+                  : slots.saveAs(slot)
+              }
+            />
+          )}
+          {!current && meta && (
+            <Btn
+              small
+              label="🗑"
+              tone="danger"
+              onPress={() => askConfirm('Supprimer cette sauvegarde ?', `« ${meta.cityName} » (emplacement ${slot}) sera effacée définitivement.`, 'Supprimer', () => slots.remove(slot))}
+            />
+          )}
           {current && <Text style={styles.slotSub}>Partie en cours</Text>}
         </View>
       </View>
@@ -580,7 +618,11 @@ function DistrictsTab() {
               {formatNumber(d.population)} hab. · {formatNumber(d.jobs)} emplois
             </Text>
           </View>
-          <Gauge icon="😊" label="Satisfaction" value={d.happiness} color={d.happiness >= 60 ? theme.positive : d.happiness >= 40 ? theme.i : theme.negative} />
+          {d.happiness >= 0 ? (
+            <Gauge icon="😊" label="Satisfaction" value={d.happiness} color={d.happiness >= 60 ? theme.positive : d.happiness >= 40 ? theme.i : theme.negative} />
+          ) : (
+            <Text style={styles.slotSub}>😊 Satisfaction : — (trop peu d’habitants)</Text>
+          )}
           <Gauge icon="🚨" label="Criminalité" value={d.crime} color="#e74c3c" />
           <Gauge icon="🏭" label="Pollution" value={d.pollution} color="#a1887f" />
           <Gauge icon="💎" label="Valeur foncière" value={d.value} color="#5dade2" />

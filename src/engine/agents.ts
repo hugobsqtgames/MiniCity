@@ -566,7 +566,7 @@ type Prepared = { drafts: Draft[]; scene: Omit<AgentsScene, 'agents'>; rand: () 
  * `issues` donne les bulles de mécontentement possibles.
  */
 /** Options de la scène : événements en cours (foules) et hiver (chasse-neige). */
-export type SceneOptions = { events?: { x: number; y: number }[]; winter?: boolean };
+export type SceneOptions = { events?: { x: number; y: number }[]; winter?: boolean; crowdOnly?: boolean };
 
 function prepare(tiles: Tile[], size: number, population: number, riders: number, scale: number, issues: number[], opts: SceneOptions = {}): Prepared {
   const fires: FireSpot[] = tiles
@@ -607,6 +607,25 @@ function prepare(tiles: Tile[], size: number, population: number, riders: number
   const add = (kind: number, seq: number[] | null, speed: number, color: number, dwell?: Set<number>) => {
     if (seq && seq.length >= 2) drafts.push(vehicle(kind, seq, size, speed, rand, color, inter, multi, roadSpeed, dwell ?? null));
   };
+
+  // Foules : les spectateurs convergent vers les lieux d'événements (calcul séparé, léger).
+  const addCrowds = () => {
+    for (const ev of opts.events ?? []) {
+      const target = nearestRoad(size, isRoad, ev.x, ev.y);
+      if (target < 0) continue;
+      const near = roads.filter((r) => Math.abs((r % size) - ev.x) + Math.abs(Math.floor(r / size) - ev.y) <= 9 && r !== target);
+      const crowd = Math.round(16 * Math.max(0.5, scale));
+      for (let p = 0; p < crowd && near.length; p++) {
+        const seq = roadPath(pick(near), target, size, isRoad);
+        if (!seq || seq.length < 2) continue;
+        drafts.push(pedestrian(seq, size, rand, Math.floor(rand() * SHIRT_COLORS.length), inter, rand() < 0.4 ? BUBBLE_HEART : -1));
+      }
+    }
+  };
+  if (opts.crowdOnly) {
+    addCrowds();
+    return { drafts, scene: { fires: [], lights: [], metro: [], waiting: [] }, rand };
+  }
 
   // 1. Navetteurs : environ une voiture pour 35 habitants qui ne prennent pas les transports.
   const drivers = Math.max(0, population - riders);
@@ -712,19 +731,6 @@ function prepare(tiles: Tile[], size: number, population: number, riders: number
     // Un piéton sur cinq a quelque chose à dire (cœur s'il est content, sinon un problème de la ville).
     const bubble = rand() < 0.2 ? (issues.length && rand() < 0.75 ? issues[Math.floor(rand() * issues.length)] : BUBBLE_HEART) : -1;
     drafts.push(pedestrian(seq, size, rand, Math.floor(rand() * SHIRT_COLORS.length), inter, bubble));
-  }
-
-  // 9. Foules : les spectateurs convergent vers les lieux d'événements.
-  for (const ev of opts.events ?? []) {
-    const target = nearestRoad(size, isRoad, ev.x, ev.y);
-    if (target < 0) continue;
-    const near = roads.filter((r) => Math.abs((r % size) - ev.x) + Math.abs(Math.floor(r / size) - ev.y) <= 9 && r !== target);
-    const crowd = Math.round(16 * Math.max(0.5, scale));
-    for (let p = 0; p < crowd && near.length; p++) {
-      const seq = roadPath(pick(near), target, size, isRoad);
-      if (!seq || seq.length < 2) continue;
-      drafts.push(pedestrian(seq, size, rand, Math.floor(rand() * SHIRT_COLORS.length), inter, rand() < 0.4 ? BUBBLE_HEART : -1));
-    }
   }
 
   return { drafts, scene: { fires, lights, metro, waiting }, rand };

@@ -9,6 +9,7 @@ import { usePersistence } from './src/hooks/usePersistence';
 import { useGameStore } from './src/store/useGameStore';
 import { ChallengeTree } from './src/ui/ChallengeTree';
 import { CitizenCard } from './src/ui/CitizenCard';
+import { ConfirmDialog } from './src/ui/ConfirmDialog';
 import { DragInfo } from './src/ui/DragInfo';
 import { Hud } from './src/ui/Hud';
 import { MapControls } from './src/ui/MapControls';
@@ -51,6 +52,7 @@ function Game() {
       )}
       {menuOpen && <MenuSheet onSaveNow={saveNow} lastSavedAt={lastSavedAt} slots={slotActions} />}
       {hydrated && <ChallengeTree />}
+      <ConfirmDialog />
       {!hydrated && <SplashScreen />}
     </View>
   );

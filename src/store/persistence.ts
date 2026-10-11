@@ -11,7 +11,7 @@ import {
   type Taxes,
 } from '../sim/constants';
 import { EMPTY_COUNTERS, type Counters } from '../sim/challenges';
-import type { Demand } from '../sim/simulation';
+import type { CityEvent, Demand, Weather } from '../sim/simulation';
 
 /** Stockage 100 % local (AsyncStorage) — aucune donnée ne quitte le téléphone. */
 /** Ancienne sauvegarde unique (migrée vers l'emplacement 1). */
@@ -43,6 +43,11 @@ export type SavedGame = {
   counters: Counters;
   /** Défis réussis : identifiant -> mois de réussite. */
   challenges: Record<string, number>;
+  isDemo: boolean;
+  weather: Weather;
+  cityEvents: CityEvent[];
+  /** Événements payés par le maire, pas encore tenus. */
+  forcedEvents: { x: number; y: number }[];
 };
 
 /** Format compact : une chaîne de caractères par attribut de tuile. */
@@ -57,6 +62,8 @@ type SaveFile = {
   garbage?: string;
   flood?: string;
   rad?: string;
+  /** Parcelles sinistrées à reconstruire en priorité. */
+  ruin?: string;
   treasury: number;
   month: number;
   /** v1 : taux unique. */
@@ -73,6 +80,10 @@ type SaveFile = {
   cityName?: string;
   counters?: Counters;
   challenges?: Record<string, number>;
+  isDemo?: boolean;
+  weather?: Weather;
+  cityEvents?: CityEvent[];
+  forcedEvents?: { x: number; y: number }[];
 };
 
 const TYPE_TO_CHAR: Record<TileType, string> = {
@@ -128,6 +139,7 @@ export function serialize(game: SavedGame): string {
     garbage: digits(game.tiles, (t) => t.garbage),
     flood: digits(game.tiles, (t) => t.flood),
     rad: digits(game.tiles, (t) => t.rad),
+    ruin: digits(game.tiles, (t) => (t.value < 0 ? 1 : 0)),
     treasury: game.treasury,
     month: game.month,
     taxes: game.taxes,
@@ -143,6 +155,10 @@ export function serialize(game: SavedGame): string {
     cityName: game.cityName,
     counters: game.counters,
     challenges: game.challenges,
+    isDemo: game.isDemo,
+    weather: game.weather,
+    cityEvents: game.cityEvents,
+    forcedEvents: game.forcedEvents,
   };
   return JSON.stringify(file);
 }
@@ -162,6 +178,7 @@ export function deserialize(json: string): SavedGame | null {
       tiles[i].garbage = num(f.garbage, i);
       tiles[i].flood = num(f.flood, i);
       tiles[i].rad = num(f.rad, i);
+      if (num(f.ruin, i) === 1) tiles[i].value = -1;
     }
     const legacyTax = f.taxRate ?? DEFAULT_TAXES.R;
     return {
@@ -181,6 +198,10 @@ export function deserialize(json: string): SavedGame | null {
       cityName: f.cityName ?? 'Ma ville',
       counters: { ...EMPTY_COUNTERS, ...f.counters },
       challenges: f.challenges ?? {},
+      isDemo: f.isDemo ?? false,
+      weather: f.weather ?? 'clear',
+      cityEvents: Array.isArray(f.cityEvents) ? f.cityEvents : [],
+      forcedEvents: Array.isArray(f.forcedEvents) ? f.forcedEvents : [],
     };
   } catch {
     return null;
