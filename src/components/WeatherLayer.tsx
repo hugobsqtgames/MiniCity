@@ -1,8 +1,10 @@
 import { Canvas, createPicture, PaintStyle, Picture, Skia, type SkPaint } from '@shopify/react-native-skia';
+import { useState } from 'react';
 import { StyleSheet, useWindowDimensions } from 'react-native';
 import { useDerivedValue, type SharedValue } from 'react-native-reanimated';
 
 import type { Weather } from '../sim/simulation';
+import { keep, makeBin, RECYCLE_PICTURES } from '../engine/pictureBin';
 
 const DROPS = 140;
 
@@ -32,9 +34,10 @@ function rnd(i: number, k: number): number {
  */
 export function WeatherLayer({ weather, clock }: { weather: Weather; clock: SharedValue<number> }) {
   const { width, height } = useWindowDimensions();
+  const [bin0] = useState(makeBin);
   const picture = useDerivedValue(() => {
     const t = clock.get() / 1000;
-    return createPicture(
+    return keep(bin0, createPicture(
       (canvas) => {
         if (weather === 'rain' || weather === 'storm') {
           const rain = Skia.PathBuilder.Make();
@@ -81,7 +84,7 @@ export function WeatherLayer({ weather, clock }: { weather: Weather; clock: Shar
         }
       },
       { x: 0, y: 0, width, height },
-    );
+    ), RECYCLE_PICTURES);
   }, [weather, width, height]);
   return (
     <Canvas style={StyleSheet.absoluteFill} pointerEvents="none">

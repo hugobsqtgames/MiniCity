@@ -106,7 +106,7 @@ Un **tutoriel** guide les premiers pas (rue → maisons → centrale → eau →
 
 ### Qualité
 
-- **102 tests jest** dont des tests aléatoires et un **monkey test du store** (milliers d'actions au hasard :
+- **91 tests jest** dont des tests aléatoires et un **monkey test du store** (milliers d'actions au hasard :
   outils, glissers, annuler / rétablir, mois qui passent, rotation, sauvegarde / rechargement…). Les invariants
   de la carte et des statistiques sont vérifiés après chaque action. Campagnes longues :
   `MONKEY_SEEDS=20 MONKEY_STEPS=5000 npx jest monkey`.

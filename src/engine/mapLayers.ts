@@ -13,6 +13,15 @@ import {
   setRenderSeason,
   type Block,
 } from './renderer';
+import { RECYCLE_PICTURES } from './pictureBin';
+
+/** Web : les images remplacées sont libérées un peu plus tard (le temps qu'elles ne soient plus dessinées). */
+function release(old: SkPicture[]) {
+  if (!RECYCLE_PICTURES || !old.length) return;
+  setTimeout(() => {
+    for (const p of old) p.dispose();
+  }, 2000);
+}
 
 export type BlockBounds = { x0: number; x1: number; y0: number; y1: number };
 
@@ -74,6 +83,7 @@ class LayerCache {
     const look = renderSeason();
     const prev = this.last;
     if (!prev || prev.size !== size) {
+      if (prev) release([...prev.layers.ground, ...prev.layers.shadows, ...prev.layers.buildings, ...prev.layers.lights]);
       const blocks = mapBlocks(size);
       const layers = buildAll(tiles, size, blocks);
       this.last = { tiles, size, blocks, layers, looks: blocks.map(() => look) };
@@ -162,6 +172,13 @@ class LayerCache {
       }
     });
     this.pending = looks.reduce((n, l) => n + (l === look ? 0 : 1), 0);
+    const old: SkPicture[] = [];
+    for (const key of ['ground', 'shadows', 'buildings', 'lights'] as const) {
+      L[key].forEach((p, k) => {
+        if (next[key][k] !== p) old.push(p);
+      });
+    }
+    release(old);
     this.last = { tiles, size, blocks: prev.blocks, layers: next, looks };
     return next;
   }

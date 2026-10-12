@@ -46,6 +46,7 @@ import { computeCoverage } from '../sim/simulation';
 import { dragTiles, useGameStore, type Tile } from '../store/useGameStore';
 import { setAmbience, type Ambience } from '../audio/sound';
 import { WeatherLayer } from './WeatherLayer';
+import { keep, makeBin, RECYCLE_PICTURES } from '../engine/pictureBin';
 
 /** Clé des itinéraires : ils ne sont recalculés que si les routes ou la population (par paliers) changent. */
 function agentsKey(tiles: Tile[], size: number, population: number, riders: number, scale: number, issues: number[], extra: string) {
@@ -108,10 +109,11 @@ function useVisiblePicture(
   worldRect: { width: number; height: number },
   alpha?: SharedValue<number>,
 ) {
+  const [bin0] = useState(makeBin);
   return useDerivedValue(() => {
     const a = alpha ? alpha.get() : 1;
     const v = viewRect(cam, 0);
-    return createPicture((canvas) => {
+    return keep(bin0, createPicture((canvas) => {
       if (a < 0.02) return;
       // Calque isolé : les effacements (mode Clear) des lumières restent dans ce calque,
       // et l'opacité s'applique aussi aux images enregistrées.
@@ -128,7 +130,7 @@ function useVisiblePicture(
         }
       }
       if (layer) canvas.restore();
-    }, { x: 0, y: 0, ...worldRect });
+    }, { x: 0, y: 0, ...worldRect }), RECYCLE_PICTURES);
   }, [pictures, bounds, alpha, cam, worldRect]);
 }
 
@@ -157,12 +159,13 @@ function AgentsLayer({
   const world = useMemo(() => getWorldSize(gridSize), [gridSize]);
   // Hauteurs du relief dans le repère de la vue (pour cacher les véhicules derrière les collines).
   const vh = useMemo(() => (top ? undefined : viewHeights(scene.heights, gridSize, rotation)), [scene.heights, gridSize, rotation, top]);
+  const [bin1] = useState(makeBin);
   const picture = useDerivedValue(() => {
     const now = clock.get();
     const visible = camera.scale.get() >= AGENTS_MIN_SCALE;
     const view = viewRect(camera, 20);
     const n = night.get();
-    return createPicture((canvas) => {
+    return keep(bin1, createPicture((canvas) => {
       if (top) {
         drawFires(canvas, scene.fires, now, gridSize, view, rotation);
         if (showMetro) drawMetro(canvas, scene, now, gridSize, rotation);
@@ -182,7 +185,7 @@ function AgentsLayer({
         canvas.restore();
         if (n > 0.15) drawAgents(canvas, scene, now, gridSize, view, rotation, 'lights', n, vh);
       } else drawAgents(canvas, scene, now, gridSize, view, rotation, 'bodies', 0, vh);
-    }, { x: 0, y: 0, ...world });
+    }, { x: 0, y: 0, ...world }), RECYCLE_PICTURES);
     // Dépendances explicites : la scène n'est recopiée vers le thread UI que si elle change.
   }, [scene, gridSize, rotation, top, showMetro, camera, vh, world]);
   return <Picture picture={picture} />;
@@ -250,10 +253,11 @@ function EffectsLayer({
 }) {
   const world = getWorldSize(gridSize);
   // Pales d'éoliennes et grandes roues qui tournent, feux d'artifice au-dessus des fêtes.
+  const [bin2] = useState(makeBin);
   const motion = useDerivedValue(() => {
     const t = clock.get() / 1000;
     const n = night.get();
-    return createPicture((canvas) => {
+    return keep(bin2, createPicture((canvas) => {
       const bladePaint = hazePaint(0.95, '#fdfefe');
       const rim = hazePaint(0.9, '#ecf0f1');
       rim.setStyle(PaintStyle.Stroke);
@@ -316,11 +320,12 @@ function EffectsLayer({
           }
         }
       }
-    }, { x: 0, y: 0, ...world });
+    }, { x: 0, y: 0, ...world }), RECYCLE_PICTURES);
   }, [spinners, bursts]);
+  const [bin3] = useState(makeBin);
   const picture = useDerivedValue(() => {
     const t = clock.get() / 1000;
-    return createPicture((canvas) => {
+    return keep(bin3, createPicture((canvas) => {
       // Avions : roulage, décollage puis montée, un départ toutes les 18 s par aéroport.
       for (const r of runways) {
         const u = ((t + r.seed) % 18) / 18;
@@ -399,19 +404,20 @@ function EffectsLayer({
           canvas.drawOval({ x: hit.x - 90 * u - 10, y: hit.y - 30 * u - 5, width: 180 * u + 20, height: 60 * u + 10 }, hazePaint(0.5 * (1 - u), '#e67e22'));
         }
       }
-    }, { x: 0, y: 0, ...world });
+    }, { x: 0, y: 0, ...world }), RECYCLE_PICTURES);
   }, [anim, runways]);
   // Smog : nappes brunâtres qui dérivent lentement.
+  const [bin4] = useState(makeBin);
   const hazePic = useDerivedValue(() => {
     const t = clock.get() / 1000;
-    return createPicture((canvas) => {
+    return keep(bin4, createPicture((canvas) => {
       for (let k = 0; k < haze.length; k++) {
         const h = haze[k];
         const dx = Math.sin(t * 0.25 + k) * 10;
         const dy = Math.cos(t * 0.2 + k * 1.7) * 4;
         canvas.drawCircle(h.x + dx, h.y + dy - 26, 16 + h.v * 22, hazePaint(Math.min(0.3, 0.08 + h.v * 0.2), '#8d6e4f'));
       }
-    }, { x: 0, y: 0, ...world });
+    }, { x: 0, y: 0, ...world }), RECYCLE_PICTURES);
   }, [haze]);
   return (
     <Group>
@@ -843,12 +849,13 @@ export function IsoMapCanvas() {
   const plowed = funding.transport >= 80;
   // (gardé au début du printemps, le temps que la neige fonde)
   const snowMask = useMemo(() => (season === 'winter' || month % 12 === 2 ? buildSnowMask(viewTiles, gridSize, !plowed) : null), [season, month, viewTiles, gridSize, plowed]);
+  const [bin5] = useState(makeBin);
   const snowPic = useDerivedValue(() => {
     const a = snow.get() * 0.82;
-    return createPicture((canvas) => {
+    return keep(bin5, createPicture((canvas) => {
       if (!snowMask || a < 0.01) return;
       canvas.drawPath(snowMask, hazePaint(a, '#f4f8fb'));
-    }, { x: 0, y: 0, ...world });
+    }, { x: 0, y: 0, ...world }), RECYCLE_PICTURES);
   }, [snowMask]);
   const snowRoofs = useDerivedValue(() => snow.get() * 0.3);
   const autumnTint = useDerivedValue(() => autumn.get() * 0.13);

@@ -46,6 +46,32 @@ let musicOn = true;
 let ready = false;
 const lastPlayed = new Map<SfxName, number>();
 
+/**
+ * Lecture / pause « sûres » : sur le web, un pause() juste après play() fait
+ * échouer la promesse de lecture du navigateur (AbortError non rattrapée).
+ * On laisse donc au moins 400 ms entre une lecture et une pause.
+ */
+const startedAt = new Map<AudioPlayer, number>();
+function play(p: AudioPlayer) {
+  startedAt.set(p, Date.now());
+  p.play();
+}
+function pause(p: AudioPlayer) {
+  const since = Date.now() - (startedAt.get(p) ?? 0);
+  // Lecture encore en cours de démarrage (fichier en chargement) : on réessaie un peu plus tard.
+  if (since < 400 || (Platform.OS === 'web' && !p.playing && since < 4000)) {
+    setTimeout(() => {
+      try {
+        pause(p);
+      } catch {
+        // Player libéré.
+      }
+    }, 250);
+    return;
+  }
+  p.pause();
+}
+
 /** À appeler une fois au démarrage. Les erreurs audio ne doivent jamais bloquer le jeu. */
 export async function initAudio(): Promise<void> {
   if (ready) return;
@@ -78,7 +104,7 @@ export function playSfx(name: SfxName): void {
       players.set(name, p);
     }
     p.seekTo(0).catch(() => {});
-    p.play();
+    play(p);
   } catch {
     // Pas de son disponible : silencieux.
   }
@@ -103,9 +129,9 @@ export function setMusicEnabled(on: boolean): void {
         waitForWebGesture();
         return;
       }
-      music.play();
-    } else {
-      music?.pause();
+      play(music);
+    } else if (music) {
+      pause(music);
     }
   } catch {
     // Musique indisponible.
@@ -176,7 +202,7 @@ function applyAmbience() {
   try {
     if (target) {
       const p = ambiencePlayer(target);
-      if (!p.playing) p.play();
+      if (!p.playing) play(p);
     }
   } catch {
     // Ambiance indisponible : silencieux.
@@ -195,7 +221,7 @@ function applyAmbience() {
           p.volume = next;
           ambienceVolumes.set(name, next);
         }
-        if (next === 0 && p.playing) p.pause();
+        if (next === 0 && p.playing) pause(p);
       } catch {
         // Player libéré ou indisponible : on l'ignore.
       }
@@ -214,21 +240,30 @@ export function setAmbienceEnabled(on: boolean): void {
   applyAmbience();
 }
 
-let ambienceDebounce: ReturnType<typeof setTimeout> | null = null;
+let ambienceTimer: ReturnType<typeof setTimeout> | null = null;
+let wantedAmbience: Ambience | null = null;
+let lastAmbienceChange = 0;
+/** Une ambiance reste au moins 8 s : la météo change chaque mois (2 s), le son ne doit pas zapper. */
+const AMBIENCE_HOLD_MS = 8000;
 
-/**
- * Change d'ambiance (null = silence) avec un fondu enchaîné d'environ 1,2 s.
- * Le changement attend une demi-seconde de stabilité : des bascules rapides
- * (chargement, pause / reprise) ne lancent pas une lecture aussitôt interrompue.
- */
+/** Change d'ambiance (null = silence) avec un fondu enchaîné d'environ 1,2 s. */
 export function setAmbience(name: Ambience | null): void {
-  if (ambienceDebounce) clearTimeout(ambienceDebounce);
-  ambienceDebounce = setTimeout(() => {
-    ambienceDebounce = null;
-    if (name === currentAmbience) return;
-    currentAmbience = name;
+  wantedAmbience = name;
+  if (ambienceTimer) return;
+  const run = () => {
+    ambienceTimer = null;
+    if (wantedAmbience === currentAmbience) return;
+    const wait = lastAmbienceChange + AMBIENCE_HOLD_MS - Date.now();
+    // Le silence (pause) s'applique tout de suite ; un changement d'ambiance attend la fin du délai.
+    if (wantedAmbience !== null && currentAmbience !== null && wait > 0) {
+      ambienceTimer = setTimeout(run, wait);
+      return;
+    }
+    currentAmbience = wantedAmbience;
+    lastAmbienceChange = Date.now();
     applyAmbience();
-  }, 500);
+  };
+  ambienceTimer = setTimeout(run, 500);
 }
 
 /** Met les ambiances en pause quand l'app passe en arrière-plan, et les relance au retour. */
@@ -240,7 +275,7 @@ export function pauseAmbience(paused: boolean): void {
     stopFade();
     for (const [name, p] of ambiencePlayers) {
       try {
-        p.pause();
+        pause(p);
         p.volume = 0;
         ambienceVolumes.set(name, 0);
       } catch {
