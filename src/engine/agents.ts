@@ -1002,20 +1002,45 @@ export async function buildAgentsAsync(
   return { ...p.scene, agents: r.value };
 }
 
+/** Plus grand k ≤ max tel que a[k + 1] <= x (a croissant), 0 sinon. Worklet. */
+function lastAtOrBefore(a: number[], x: number, max: number): number {
+  'worklet';
+  let lo = 0;
+  let hi = max;
+  while (lo < hi) {
+    const m = (lo + hi + 1) >> 1;
+    if (a[m] <= x) lo = m;
+    else hi = m - 1;
+  }
+  return lo;
+}
+
+/** Plus grand k ≤ max tel que a[k] < x (a croissant), 0 sinon : le segment qui contient x. Worklet. */
+function lastBefore(a: number[], x: number, max: number): number {
+  'worklet';
+  let lo = 0;
+  let hi = max;
+  while (lo < hi) {
+    const m = (lo + hi + 1) >> 1;
+    if (a[m] < x) lo = m;
+    else hi = m - 1;
+  }
+  return lo;
+}
+
 /** Position d'un agent à l'instant t (s), en coordonnées d'origine. Worklet. */
 export function agentPosition(ag: Agent, t: number) {
   'worklet';
   const tm = mod(t + ag.phase, ag.loopT);
-  let k = 0;
-  while (k < ag.kt.length - 2 && ag.kt[k + 1] <= tm) k++;
+  // Recherche dichotomique de la clé (appelée à chaque image pour chaque agent).
+  const k = lastAtOrBefore(ag.kt, tm, ag.kt.length - 2);
   const span = ag.kt[k + 1] - ag.kt[k];
   const stopped = ag.kd[k + 1] === ag.kd[k];
   // À la distance `total` à l'arrêt, l'agent est "chez lui" : on ne le dessine pas.
   const hidden = stopped && ag.kd[k] === ag.total;
   let d = span > 0 ? ag.kd[k] + ((ag.kd[k + 1] - ag.kd[k]) * (tm - ag.kt[k])) / span : ag.kd[k];
   if (d >= ag.total) d = 0;
-  let i = 0;
-  while (i < ag.cum.length - 2 && ag.cum[i + 1] < d) i++;
+  const i = lastBefore(ag.cum, d, ag.cum.length - 2);
   const segLen = ag.cum[i + 1] - ag.cum[i] || 1;
   const f = (d - ag.cum[i]) / segLen;
   const dx = ag.gx[i + 1] - ag.gx[i];
@@ -1222,8 +1247,7 @@ function drawBubble(canvas: SkCanvas, x: number, y: number, kind: number) {
 function alongLoop(v: LineVehicle, d: number) {
   'worklet';
   const dd = mod(d, v.total);
-  let i = 0;
-  while (i < v.cum.length - 2 && v.cum[i + 1] < dd) i++;
+  const i = lastBefore(v.cum, dd, v.cum.length - 2);
   const seg = v.cum[i + 1] - v.cum[i] || 1;
   const f = (dd - v.cum[i]) / seg;
   const dx = v.gx[i + 1] - v.gx[i];

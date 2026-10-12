@@ -36,7 +36,7 @@ import {
   DISASTER_LABELS,
   EVENT_COST,
   EVENT_LABELS,
-  simulateMonth,
+  simulateMonthSteps,
   topComplaint,
   type Analysis,
   type CityEvent,
@@ -47,6 +47,7 @@ import {
   type DisasterKind,
   type Epidemic,
   type Policy,
+  type SimOutput,
   type Weather,
 } from '../sim/simulation';
 import { dragModeOf, dragTiles, type Drag } from '../sim/drag';
@@ -88,6 +89,8 @@ export type MenuTab = 'advisors' | 'city' | 'districts' | 'budget' | 'laws' | 'e
 /** Une action à annuler : les tuiles modifiées (avant / après) et son coût. */
 type UndoAction = { cells: { i: number; before: Tile; after: Tile; cost: number }[]; cost: number };
 const UNDO_LIMIT = 40;
+/** Durée d'une tranche de calcul du mois (ms) : bien moins qu'une image à 60 i/s. */
+const SLICE_MS = 6;
 
 type GameState = {
   hydrated: boolean;
@@ -163,7 +166,8 @@ type GameState = {
   paintEnd: () => void;
   undo: () => void;
   redo: () => void;
-  tick: () => void;
+  /** Un mois de simulation (découpé en tranches, sauf `sync`). */
+  tick: (sync?: boolean) => void;
   setSpeed: (speed: Speed) => void;
   togglePause: () => void;
   setTax: (zone: keyof Taxes, rate: number) => void;
@@ -288,6 +292,11 @@ export const useGameStore = create<GameState>()((set, get) => {
     p.catch(() => {});
   };
 
+  /** Mois en cours de calcul (par tranches), numéro de ville (pour ignorer un calcul périmé), tuiles modifiées entre-temps. */
+  let ticking = false;
+  let cityGen = 0;
+  let edited: Set<number> | null = null;
+
   /** Action en cours d'enregistrement (glissé) : toutes ses tuiles forment une seule entrée d'annulation. */
   let pending: UndoAction | null = null;
   const pushUndo = (action: UndoAction) => {
@@ -307,6 +316,7 @@ export const useGameStore = create<GameState>()((set, get) => {
     if (!res.ok) return res.reason;
     const i = y * s.gridSize + x;
     const cell = { i, before: s.tiles[i], after: res.tiles[i], cost: res.cost };
+    edited?.add(i);
     if (batch) set({ tiles: res.tiles, treasury: s.treasury - res.cost });
     else set({ tiles: res.tiles, treasury: s.treasury - res.cost, stats: quickStats(s.stats, res.tiles) });
     if (pending) {
@@ -338,6 +348,7 @@ export const useGameStore = create<GameState>()((set, get) => {
       const cur = tiles[c.i];
       if (cur.type !== from.type || cur.lake !== from.lake || cur.elev !== from.elev || cur.line !== from.line) continue;
       tiles[c.i] = { ...to, fire: 0, flood: 0, garbage: 0, rad: cur.rad };
+      edited?.add(c.i);
       applied++;
       refund += c.cost ?? 0;
     }
@@ -487,12 +498,12 @@ export const useGameStore = create<GameState>()((set, get) => {
       playSfx('click');
     },
 
-    tick: () => {
+    tick: (sync = false) => {
       const s = get();
-      if (s.paused || !s.hydrated) return;
+      if (s.paused || !s.hydrated || ticking) return;
       const month = s.month + 1;
       const policy = s.policy();
-      const res = simulateMonth({
+      const steps = simulateMonthSteps({
         tiles: s.tiles,
         size: s.gridSize,
         treasury: s.treasury,
@@ -505,6 +516,23 @@ export const useGameStore = create<GameState>()((set, get) => {
         month,
         forcedEvents: s.forcedEvents,
       });
+      const gen = cityGen;
+      ticking = true;
+      edited = new Set<number>();
+
+      /** Fin du mois : on fusionne avec ce que le joueur a construit pendant le calcul. */
+      const finish = (raw: SimOutput) => {
+        const cur = get();
+        const touched = edited;
+        edited = null;
+        ticking = false;
+        let merged = raw.tiles;
+        if (touched && touched.size) {
+          merged = merged.slice();
+          for (const i of touched) merged[i] = cur.tiles[i];
+          merged = applyPower(merged, s.gridSize, month);
+        }
+        const res: SimOutput = { ...raw, tiles: merged, treasury: cur.treasury + (raw.treasury - s.treasury) };
 
       // Événements du mois : on prévient le joueur comme dans SimCity.
       const disaster = res.events.disasters[0];
@@ -624,7 +652,8 @@ export const useGameStore = create<GameState>()((set, get) => {
         month,
         weather: res.weather,
         cityEvents: res.cityEvents,
-        forcedEvents: [],
+        // (événements programmés pendant le calcul : gardés pour le mois suivant)
+        forcedEvents: get().forcedEvents.filter((f) => !s.forcedEvents.includes(f)),
         counters: c,
         challenges: done,
         epidemic: res.epidemic,
@@ -632,7 +661,7 @@ export const useGameStore = create<GameState>()((set, get) => {
         missionSeq,
         records,
         timelapse,
-        pendingDisaster: null,
+        pendingDisaster: get().pendingDisaster === s.pendingDisaster ? null : get().pendingDisaster,
         lastDisaster: disaster ? { event: disaster, at: Date.now() } : s.lastDisaster,
         news: news.length ? [...news.reverse(), ...s.news].slice(0, 60) : s.news,
         history: {
@@ -643,6 +672,22 @@ export const useGameStore = create<GameState>()((set, get) => {
           pollution: pushCapped(s.history.pollution, res.stats.pollution),
         },
       });
+      };
+
+      // Le mois est calculé par tranches de quelques millisecondes : l'écran ne fige jamais.
+      const run = () => {
+        if (gen !== cityGen) {
+          ticking = false;
+          edited = null;
+          return;
+        }
+        const t0 = Date.now();
+        let r = steps.next();
+        while (!r.done && (sync || Date.now() - t0 < SLICE_MS)) r = steps.next();
+        if (r.done) finish(r.value);
+        else setTimeout(run, 0);
+      };
+      run();
     },
 
     setSpeed: (speed) => set({ speed, paused: false }),
@@ -701,15 +746,18 @@ export const useGameStore = create<GameState>()((set, get) => {
 
     newCity: (size = GRID_SIZE) => {
       pending = null;
+      cityGen++;
       set({ ...freshCity(createTerrainMap(size), size, START_FUNDS), paused: false, rotation: 0, dataView: 'none', disasters: get().disasters, funDisasters: get().funDisasters, toast: null, confirm: null, timelapseOpen: false });
     },
     loadDemoCity: () => {
       pending = null;
+      cityGen++;
       set({ ...freshCity(createDemoMap(50), 50, 50000, 'Démoville', true), paused: false, rotation: 0, dataView: 'none', toast: null, confirm: null, timelapseOpen: false });
     },
 
     hydrate: (save) => {
       pending = null;
+      cityGen++;
       if (!save) {
         // Première partie (ou emplacement vide) : une carte naturelle neuve, réglages de partie remis à zéro.
         set({ ...freshCity(createTerrainMap(GRID_SIZE), GRID_SIZE, START_FUNDS), hydrated: true, rotation: 0, dataView: 'none', disasters: false, funDisasters: false, toast: null, confirm: null, timelapseOpen: false });

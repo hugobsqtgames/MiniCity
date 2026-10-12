@@ -403,25 +403,42 @@ export function computeWaterPollution(tiles: Tile[], size: number, cov: Coverage
   const n = tiles.length;
   const lake = new Float32Array(n);
   const R = 6;
-  let any = false;
-  for (const t of tiles) if (t.type === 'LAKE') any = true;
-  if (!any) return lake;
+  // Distance à l'eau (BFS limité à R) : seuls les quartiers proches d'un lac comptent.
+  const near = new Int8Array(n).fill(-1);
+  const queue: number[] = [];
+  for (let i = 0; i < n; i++) {
+    if (tiles[i].type === 'LAKE') {
+      near[i] = 0;
+      queue.push(i);
+    }
+  }
+  if (!queue.length) return lake;
+  for (let h = 0; h < queue.length; h++) {
+    const i = queue[h];
+    if (near[i] >= R) continue;
+    for (const nb of neighbours4(i, size, n)) {
+      if (nb < 0 || near[nb] >= 0) continue;
+      near[nb] = near[i] + 1;
+      queue.push(nb);
+    }
+  }
   for (const t of tiles) {
-    if (!isZone(t.type) || t.density === 0) continue;
+    if (!isZone(t.type) || t.density === 0 || near[t.y * size + t.x] < 0) continue;
     const i = t.y * size + t.x;
     const treated = cov.TREATMENT[i];
     const ind = t.type === 'I' ? (t.spec === 3 ? 0.5 : t.spec === 1 ? 2 : 3) : 0.6;
     const load = ind * t.density * (1 - treated * 0.9);
     if (load <= 0) continue;
+    const k = falloff(R);
     for (let dy = -R; dy <= R; dy++) {
+      const y = t.y + dy;
+      if (y < 0 || y >= size) continue;
       for (let dx = -R; dx <= R; dx++) {
         const x = t.x + dx;
-        const y = t.y + dy;
-        if (x < 0 || y < 0 || x >= size || y >= size) continue;
+        if (x < 0 || x >= size) continue;
         const j = y * size + x;
-        if (tiles[j].type !== 'LAKE') continue;
-        const d = Math.hypot(dx, dy);
-        if (d <= R) lake[j] += load * (1 - d / (R + 1));
+        const f = k[(dy + R) * (2 * R + 1) + dx + R];
+        if (f > 0 && near[j] === 0) lake[j] += load * f;
       }
     }
   }
@@ -634,6 +651,24 @@ export function computeTraffic(tiles: Tile[], size: number, transit: Float32Arra
   return { congestion, commute, jobless, parent, homes };
 }
 
+/** Noyau de décroissance (1 − d/(r+1)) précalculé par rayon (0 hors du disque). */
+const kernels = new Map<number, Float32Array>();
+function falloff(radius: number): Float32Array {
+  let k = kernels.get(radius);
+  if (!k) {
+    const w = 2 * radius + 1;
+    k = new Float32Array(w * w);
+    for (let dy = -radius; dy <= radius; dy++) {
+      for (let dx = -radius; dx <= radius; dx++) {
+        const d = Math.hypot(dx, dy);
+        k[(dy + radius) * w + dx + radius] = d > radius ? 0 : 1 - d / (radius + 1);
+      }
+    }
+    kernels.set(radius, k);
+  }
+  return k;
+}
+
 /** Pollution par niveau d'une usine selon sa spécialité (classique, agriculture, bois, haute technologie). */
 const SPEC_POLLUTION = [7, 2, 4, 1.5];
 
@@ -646,14 +681,18 @@ export function computePollution(
 ): Float32Array {
   const pollution = new Float32Array(size * size);
   const emit = (cx: number, cy: number, strength: number, radius: number) => {
+    const k = falloff(radius);
+    const w = 2 * radius + 1;
     for (let dy = -radius; dy <= radius; dy++) {
+      const y = cy + dy;
+      if (y < 0 || y >= size) continue;
+      const row = y * size;
+      const krow = (dy + radius) * w + radius;
       for (let dx = -radius; dx <= radius; dx++) {
         const x = cx + dx;
-        const y = cy + dy;
-        if (x < 0 || y < 0 || x >= size || y >= size) continue;
-        const d = Math.hypot(dx, dy);
-        if (d > radius) continue;
-        pollution[y * size + x] += strength * (1 - d / (radius + 1));
+        if (x < 0 || x >= size) continue;
+        const f = k[krow + dx];
+        if (f > 0) pollution[row + x] += strength * f;
       }
     }
   };
@@ -758,17 +797,34 @@ function computeExports(tiles: Tile[], size: number, transportF: number) {
   return { ok, jobs, capacity: Math.round(capacity), connected };
 }
 
+/** Exécute d'un coup un calcul découpé en étapes (générateur). */
+export function runSteps<T>(steps: Generator<void, T, void>): T {
+  let r = steps.next();
+  while (!r.done) r = steps.next();
+  return r.value;
+}
+
 /** Analyse complète de la ville (statistiques + cartes), sans la faire évoluer. */
 export function analyzeCity(tiles: Tile[], size: number, policy: Policy = DEFAULT_POLICY, month = 3, cityEvents: CityEvent[] = [], epidemic: Epidemic | null = null): Analysis {
+  return runSteps(analyzeCitySteps(tiles, size, policy, month, cityEvents, epidemic));
+}
+
+/** Même analyse, découpée en étapes : on peut rendre la main entre deux (pas de saccade). */
+export function* analyzeCitySteps(tiles: Tile[], size: number, policy: Policy = DEFAULT_POLICY, month = 3, cityEvents: CityEvent[] = [], epidemic: Epidemic | null = null): Generator<void, Analysis, void> {
   const { funding, ordinances, taxes } = policy;
   const cov = computeCoverage(tiles, size, funding);
   const grid = computeGrid(tiles, size, month);
+  yield;
   const exp = computeExports(tiles, size, fundingFactor(funding, 'transport'));
   const transit = transitShares(tiles, cov, ordinances);
   const traffic = computeTraffic(tiles, size, transit);
+  yield;
   const pollution = computePollution(tiles, size, ordinances, traffic.congestion);
+  yield;
   const crimeMap = new Float32Array(tiles.length);
+  yield;
   const waterMap = computeWaterPollution(tiles, size, cov);
+  yield;
   const healthMap = new Float32Array(tiles.length);
   if (epidemic && epidemic.severity > 0) {
     const ids = districtMap(size).ids;
@@ -1337,6 +1393,11 @@ export const DISASTER_LABELS: Record<DisasterKind, { icon: string; label: string
 
 /** Un mois de simulation. Fonction pure : renvoie le nouvel état sans muter l'entrée. */
 export function simulateMonth(input: SimInput): SimOutput {
+  return runSteps(simulateMonthSteps(input));
+}
+
+/** Le même mois, découpé en étapes de quelques millisecondes (voir runSteps / le store). */
+export function* simulateMonthSteps(input: SimInput): Generator<void, SimOutput, void> {
   const { size } = input;
   const policy = policyOf(input);
   const { taxes, funding, ordinances } = policy;
@@ -1351,7 +1412,8 @@ export function simulateMonth(input: SimInput): SimOutput {
 
   // 1. Réseaux (au cas où la carte aurait changé depuis le dernier tick).
   let tiles = applyPower(input.tiles, size, month);
-  const before = analyzeCity(tiles, size, policy, month, [], input.epidemic ?? null);
+  yield;
+  const before = yield* analyzeCitySteps(tiles, size, policy, month, [], input.epidemic ?? null);
   const dIds = districtMap(size).ids;
   const epi = input.epidemic && input.epidemic.severity > 0 ? input.epidemic : null;
   let forestBurnt = 0;
@@ -1394,6 +1456,7 @@ export function simulateMonth(input: SimInput): SimOutput {
   const fireF = (i: number) => before.cov.FIRE[i];
 
   for (let k = 0; k < n; k++) {
+    if (k > 0 && k % 600 === 0) yield;
     const idx = (start + k) % n;
     let t = out[idx];
     // Allumé ce mois-ci par un voisin : le feu ne progresse qu'au mois suivant.
@@ -1619,7 +1682,8 @@ export function simulateMonth(input: SimInput): SimOutput {
   tiles = applyPower(out, size, month);
 
   // 6. Budget : impôts R/C/I + tourisme − entretien (au prorata du budget) − ordonnances.
-  const after = analyzeCity(tiles, size, policy, month, cityEvents, epidemic);
+  yield;
+  const after = yield* analyzeCitySteps(tiles, size, policy, month, cityEvents, epidemic);
   const stats = after.stats;
   if (snowJam && stats.population > 0) {
     stats.happiness = Math.max(0, stats.happiness - 5);

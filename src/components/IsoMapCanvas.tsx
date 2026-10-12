@@ -46,6 +46,7 @@ import { computeCoverage } from '../sim/simulation';
 import { dragTiles, useGameStore, type Tile } from '../store/useGameStore';
 import { setAmbience, type Ambience } from '../audio/sound';
 import { WeatherLayer } from './WeatherLayer';
+import { KeyedMemo } from '../engine/keyedMemo';
 import { keep, makeBin, RECYCLE_PICTURES } from '../engine/pictureBin';
 
 /** Clé des itinéraires : ils ne sont recalculés que si les routes ou la population (par paliers) changent. */
@@ -487,7 +488,10 @@ export function IsoMapCanvas() {
   const agentTiles = delayed.length === gridSize * gridSize ? delayed : tiles;
   const issueKey = useGameStore((s) => cityIssues(s.stats, Math.max(s.taxes.R, s.taxes.C, s.taxes.I)).join(','));
   const [built, setBuilt] = useState<{ key: string; scene: AgentsScene }>({ key: '', scene: EMPTY_SCENE });
-  const wantedKey = agentsKey(agentTiles, gridSize, population, riders, agentScale, issueKey ? issueKey.split(',').map(Number) : [], `${winter}`);
+  const wantedKey = useMemo(
+    () => agentsKey(agentTiles, gridSize, population, riders, agentScale, issueKey ? issueKey.split(',').map(Number) : [], `${winter}`),
+    [agentTiles, gridSize, population, riders, agentScale, issueKey, winter],
+  );
   useEffect(() => {
     if (wantedKey === built.key) return;
     let cancelled = false;
@@ -592,7 +596,25 @@ export function IsoMapCanvas() {
   }, [maps, healthKey, viewTiles, tiles, gridSize, rotation]);
 
   // Éoliennes et grandes roues (animées) ; feux d'artifice au-dessus des événements.
-  const spinners = useMemo(() => {
+  // Les masques ne sont refaits que si une éolienne / roue ou son voisinage change (pas à chaque mois).
+  const spinnerKey = useMemo(() => {
+    let key = `${gridSize}:${rotation}`;
+    for (const t of tiles) {
+      if (t.type !== 'WIND' && t.type !== 'FAIR') continue;
+      let h = 0;
+      for (let y = Math.max(0, t.y - 5); y <= Math.min(gridSize - 1, t.y + 5); y++) {
+        for (let x = Math.max(0, t.x - 5); x <= Math.min(gridSize - 1, t.x + 5); x++) {
+          const n = tiles[y * gridSize + x];
+          h = (Math.imul(h, 31) + n.type.charCodeAt(0) * 7 + n.type.length + n.density * 3 + n.elev * 11 + n.spec) | 0;
+        }
+      }
+      key += `|${t.x},${t.y},${h}`;
+    }
+    return key;
+  }, [tiles, gridSize, rotation]);
+  const [spinnerCache] = useState(() => new KeyedMemo<Spinner[]>());
+  const spinners = spinnerCache.get(spinnerKey, buildSpinners);
+  function buildSpinners(): Spinner[] {
     const out: Spinner[] = [];
     for (const t of tiles) {
       if (t.type !== 'WIND' && t.type !== 'FAIR') continue;
@@ -608,7 +630,7 @@ export function IsoMapCanvas() {
       }
     }
     return out;
-  }, [tiles, viewTiles, gridSize, rotation, origin]);
+  }
   const bursts = useMemo(
     () =>
       cityEvents

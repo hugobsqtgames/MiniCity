@@ -78,7 +78,7 @@ describe('monkey test du store', () => {
           }
         } else if (roll < 0.56) s.undo();
         else if (roll < 0.6) s.redo();
-        else if (roll < 0.78) s.tick();
+        else if (roll < 0.78) s.tick(true);
         else if (roll < 0.8) s.rotate(r() < 0.5 ? 1 : -1);
         else if (roll < 0.82) s.setTax(pick(r, ['R', 'C', 'I'] as const), int(r, -5, 30));
         else if (roll < 0.84) s.setFunding(pick(r, ['police', 'fire', 'health', 'education', 'transport', 'utilities', 'waste'] as const), int(r, -50, 200));
