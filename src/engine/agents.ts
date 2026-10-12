@@ -1,4 +1,4 @@
-import { PaintStyle, Skia, type SkCanvas, type SkPathBuilder } from '@shopify/react-native-skia';
+import { PaintStyle, Skia, StrokeJoin, type SkCanvas, type SkPaint, type SkPathBuilder } from '@shopify/react-native-skia';
 
 import { getOrigin, HALF_H, HALF_W } from './iso';
 import { LEVEL_H } from '../sim/constants';
@@ -1332,6 +1332,274 @@ function drawLineVehicles(canvas: SkCanvas, scene: AgentsScene, t: number, gridS
   scrap.detach();
 }
 
+/** Demi-longueur L et demi-largeur W (en tuiles) de chaque type de véhicule. Worklet. */
+function vehicleSize(kind: number): { L: number; W: number } {
+  'worklet';
+  if (kind === AGENT_BUS) return { L: 0.38, W: 0.12 };
+  if (kind === AGENT_FIRETRUCK) return { L: 0.32, W: 0.12 };
+  if (kind === AGENT_AMBULANCE) return { L: 0.24, W: 0.115 };
+  if (kind === AGENT_TRUCK || kind === AGENT_GARBAGE || kind === AGENT_PLOW) return { L: 0.28, W: 0.12 };
+  return { L: 0.2, W: 0.1 };
+}
+
+type VehicleKit = {
+  top: SkPaint[];
+  left: SkPaint[];
+  right: SkPaint[];
+  glassL: SkPaint;
+  glassR: SkPaint;
+  glassTop: SkPaint;
+  wheel: SkPaint;
+  hub: SkPaint;
+  outline: SkPaint;
+  head: SkPaint;
+  tail: SkPaint;
+  red: SkPaint;
+  blue: SkPaint;
+  amber: SkPaint;
+  white: SkPaint[];
+  stripe: SkPaint[];
+  steel: SkPaint[];
+};
+
+/** Peintures des véhicules (créées une fois par image). Worklet. */
+function vehiclePaints(): VehicleKit {
+  'worklet';
+  const outline = makePaint('#0b1622', 0.55);
+  outline.setStyle(PaintStyle.Stroke);
+  outline.setStrokeWidth(0.4);
+  outline.setStrokeJoin(StrokeJoin.Round);
+  const trio = (c: string) => [makePaint(shade(c, 0.28)), makePaint(shade(c, -0.08)), makePaint(shade(c, -0.38))];
+  return {
+    top: BODY.map((c) => makePaint(BODY_LIGHT[BODY.indexOf(c)])),
+    left: BODY.map((c) => makePaint(BODY_MID[BODY.indexOf(c)])),
+    right: BODY.map((c) => makePaint(BODY_DARK[BODY.indexOf(c)])),
+    glassL: makePaint('#4f86b0'),
+    glassR: makePaint('#29506e'),
+    glassTop: makePaint('#9ccbe8'),
+    wheel: makePaint('#15191e'),
+    hub: makePaint('#9aa3ab'),
+    outline,
+    head: makePaint('#fff4c2'),
+    tail: makePaint('#e3342f'),
+    red: makePaint('#ff3b30'),
+    blue: makePaint('#2f80ff'),
+    amber: makePaint('#f39c12'),
+    white: trio('#f4f6f7'),
+    stripe: trio('#e74c3c'),
+    steel: trio('#aab2ba'),
+  };
+}
+
+/**
+ * Solide extrudé dans le repère du véhicule (a = vers l'avant, b = vers la
+ * gauche) : `base` à la hauteur z0, `top` à z1 (même nombre de sommets ; un
+ * sommet plus petit donne des faces inclinées, comme un pare-brise). Seules les
+ * faces tournées vers le spectateur sont dessinées, éclairées selon leur
+ * orientation, puis cernées d'un trait fin. Worklet.
+ */
+function drawSolid(
+  canvas: SkCanvas,
+  paints: [SkPaint | null, SkPaint, SkPaint],
+  outline: SkPaint | null,
+  cx: number,
+  cy: number,
+  ux: number,
+  uy: number,
+  base: number[],
+  top: number[],
+  z0: number,
+  z1: number,
+  oX: number,
+  oY: number,
+) {
+  'worklet';
+  const vx = -uy;
+  const vy = ux;
+  const n = base.length / 2;
+  const gxB: number[] = [];
+  const gyB: number[] = [];
+  const sB: { x: number; y: number }[] = [];
+  const sT: { x: number; y: number }[] = [];
+  let area = 0;
+  for (let k = 0; k < n; k++) {
+    const ga = cx + ux * base[2 * k] + vx * base[2 * k + 1];
+    const gb = cy + uy * base[2 * k] + vy * base[2 * k + 1];
+    gxB.push(ga);
+    gyB.push(gb);
+    sB.push({ x: oX + (ga - gb) * HALF_W, y: oY + (ga + gb) * HALF_H - z0 });
+    const ta = cx + ux * top[2 * k] + vx * top[2 * k + 1];
+    const tb = cy + uy * top[2 * k] + vy * top[2 * k + 1];
+    sT.push({ x: oX + (ta - tb) * HALF_W, y: oY + (ta + tb) * HALF_H - z1 });
+  }
+  for (let k = 0; k < n; k++) {
+    const m = (k + 1) % n;
+    area += gxB[k] * gyB[m] - gxB[m] * gyB[k];
+  }
+  const sign = area > 0 ? 1 : -1;
+  const left = Skia.PathBuilder.Make();
+  const right = Skia.PathBuilder.Make();
+  for (let k = 0; k < n; k++) {
+    const m = (k + 1) % n;
+    const ex = gxB[m] - gxB[k];
+    const ey = gyB[m] - gyB[k];
+    const nx = ey * sign;
+    const ny = -ex * sign;
+    if (nx + ny <= 1e-6) continue;
+    (nx > ny ? right : left).addPoly([sB[k], sB[m], sT[m], sT[k]], true);
+  }
+  const l = left.detach();
+  const r = right.detach();
+  canvas.drawPath(l, paints[1]);
+  canvas.drawPath(r, paints[2]);
+  if (outline) {
+    canvas.drawPath(l, outline);
+    canvas.drawPath(r, outline);
+  }
+  if (paints[0]) {
+    const tp = Skia.PathBuilder.Make();
+    tp.addPoly(sT, true);
+    const tpath = tp.detach();
+    canvas.drawPath(tpath, paints[0]);
+    if (outline) canvas.drawPath(tpath, outline);
+  }
+}
+
+/** Rectangle aux coins coupés (a1..a2 en longueur, ±w en largeur), sommets à plat. Worklet. */
+function chamfer(a1: number, a2: number, w: number, ca: number, cb: number): number[] {
+  'worklet';
+  return [a2, w - cb, a2 - ca, w, a1 + ca, w, a1, w - cb, a1, -w + cb, a1 + ca, -w, a2 - ca, -w, a2, -w + cb];
+}
+
+/**
+ * Un véhicule en volume, façon city-builder isométrique : roues, carrosserie
+ * aux coins arrondis, habitacle à pare-brise incliné, vitres, phares et feux.
+ * Chaque véhicule est dessiné entièrement avant le suivant (de l'arrière vers
+ * l'avant), pour qu'aucun ne passe « à travers » celui de devant. Worklet.
+ */
+function drawVehicle(
+  canvas: SkCanvas,
+  P: VehicleKit,
+  ag: Agent,
+  v: { gx: number; gy: number; ux: number; uy: number; stopped: boolean },
+  oX: number,
+  oY: number,
+  blink: boolean,
+  detailed: boolean,
+) {
+  'worklet';
+  const { gx, gy, ux, uy } = v;
+  const { L, W } = vehicleSize(ag.kind);
+  const vx = -uy;
+  const vy = ux;
+  const c = ag.color >= 0 && ag.color < P.top.length ? ag.color : 0;
+  const body: [SkPaint, SkPaint, SkPaint] = [P.top[c], P.left[c], P.right[c]];
+  const glass: [SkPaint, SkPaint, SkPaint] = [P.glassTop, P.glassL, P.glassR];
+  const at = (a: number, b: number, z: number) => {
+    const qx = gx + ux * a + vx * b;
+    const qy = gy + uy * a + vy * b;
+    return { x: oX + (qx - qy) * HALF_W, y: oY + (qx + qy) * HALF_H - z };
+  };
+  // De loin : pas de contours ni de petits détails (beaucoup moins de dessins par image).
+  const solid = (paints: [SkPaint | null, SkPaint, SkPaint], base: number[], top: number[], z0: number, z1: number, outline = true) =>
+    drawSolid(canvas, paints, outline && detailed ? P.outline : null, gx, gy, ux, uy, base, top, z0, z1, oX, oY);
+  const box = (paints: [SkPaint | null, SkPaint, SkPaint], a1: number, a2: number, w: number, z0: number, z1: number, outline = true) => {
+    const p = chamfer(a1, a2, w, (a2 - a1) * 0.06, w * 0.25);
+    solid(paints, p, p, z0, z1, outline);
+  };
+
+  // Roues : côté visible avec jante claire, l'autre côté à peine visible sous la caisse.
+  const sideVisible = vx + vy > 0 ? 1 : -1;
+  const axles = ag.kind === AGENT_BUS || ag.kind === AGENT_FIRETRUCK ? [0.66, -0.5, -0.72] : [0.62, -0.62];
+  for (const s of detailed ? [-sideVisible, sideVisible] : [sideVisible]) {
+    for (const k of axles) {
+      const p = at(L * k, W * s * 0.98, 1.55);
+      canvas.drawCircle(p.x, p.y, 1.7, P.wheel);
+      if (detailed && s === sideVisible) canvas.drawCircle(p.x, p.y, 0.65, P.hub);
+    }
+  }
+
+  if (ag.kind === AGENT_BUS) {
+    box(body, -L, L, W, 1.1, 10);
+    // Bande vitrée tout autour, bande décorative blanche, toit clair.
+    box([null, P.glassL, P.glassR], -L * 0.94, L * 0.97, W * 1.015, 5.2, 8.4, false);
+    if (detailed) {
+      box([null, P.white[1], P.white[2]], -L * 0.99, L * 0.99, W * 1.02, 3.0, 3.9, false);
+      box([P.white[0], P.white[1], P.white[2]], -L * 0.7, L * 0.4, W * 0.55, 10, 10.9);
+    }
+  } else if (ag.kind === AGENT_CAR || ag.kind === AGENT_POLICE) {
+    // Carrosserie basse aux coins arrondis, capot et coffre.
+    const lower = chamfer(-L, L, W, L * 0.16, W * 0.38);
+    const lowerTop = chamfer(-L * 0.97, L * 0.95, W * 0.94, L * 0.2, W * 0.4);
+    solid(body, lower, lowerTop, 1.0, 3.9);
+    // Habitacle : pare-brise et lunette inclinés, toit plus étroit.
+    const cabBase = chamfer(-L * 0.62, L * 0.3, W * 0.88, L * 0.05, W * 0.15);
+    const cabTop = chamfer(-L * 0.46, L * 0.02, W * 0.7, L * 0.05, W * 0.15);
+    solid([body[0], glass[1], glass[2]], cabBase, cabTop, 3.9, 6.7);
+    if (ag.kind === AGENT_POLICE) {
+      // Rampe de gyrophares sur le toit.
+      box([blink ? P.red : P.blue, blink ? P.red : P.blue, blink ? P.blue : P.red], -L * 0.3, -L * 0.14, W * 0.62, 6.7, 7.7);
+    }
+  } else {
+    // Camions : caisse (benne, citerne, cellule) à l'arrière, cabine à l'avant.
+    const isAmb = ag.kind === AGENT_AMBULANCE;
+    const cargo: [SkPaint, SkPaint, SkPaint] = isAmb ? [P.white[0], P.white[1], P.white[2]] : ag.kind === AGENT_TRUCK ? [P.top[COLOR_TRUCK], P.left[COLOR_TRUCK], P.right[COLOR_TRUCK]] : body;
+    const split = isAmb ? L * 0.18 : L * 0.24;
+    const drawCargo = () => {
+      box(cargo, -L, split, W, 1.6, isAmb ? 8.6 : 9.6);
+      if (isAmb) box([null, P.stripe[1], P.stripe[2]], -L * 0.98, split * 0.98, W * 1.02, 4.4, 5.6, false);
+      if (ag.kind === AGENT_FIRETRUCK) {
+        // Grande échelle repliée sur le toit.
+        box([P.steel[0], P.steel[1], P.steel[2]], -L * 0.92, L * 0.55, W * 0.32, 9.6, 10.6);
+      }
+    };
+    const drawCab = () => {
+      const cab = chamfer(split + L * 0.04, L, W * 0.96, L * 0.08, W * 0.3);
+      solid(body, cab, cab, 1.2, 5.0);
+      const cabBase = chamfer(split + L * 0.06, L * 0.88, W * 0.9, L * 0.04, W * 0.2);
+      const cabTop = chamfer(split + L * 0.06, L * 0.6, W * 0.82, L * 0.04, W * 0.2);
+      solid([body[0], glass[1], glass[2]], cabBase, cabTop, 5.0, 8.2);
+    };
+    // Ordre peintre : la partie la plus éloignée du spectateur d'abord.
+    if (ux + uy > 0) {
+      drawCargo();
+      drawCab();
+    } else {
+      drawCab();
+      drawCargo();
+    }
+    if (ag.kind === AGENT_PLOW) {
+      // Lame orange à l'avant.
+      box([P.amber, P.amber, P.amber], L, L * 1.16, W * 1.35, 0.5, 3.6);
+    }
+    if (ag.kind === AGENT_FIRETRUCK || isAmb || ag.kind === AGENT_PLOW) {
+      const lp = at(L * 0.72, 0, 8.9);
+      if (ag.kind === AGENT_PLOW) {
+        if (blink) canvas.drawCircle(lp.x, lp.y, 1.3, P.amber);
+      } else {
+        const a = at(L * 0.72, W * 0.5, 8.9);
+        const b = at(L * 0.72, -W * 0.5, 8.9);
+        canvas.drawCircle(a.x, a.y, 1.1, blink ? P.red : P.blue);
+        canvas.drawCircle(b.x, b.y, 1.1, blink || ag.kind === AGENT_FIRETRUCK ? P.red : P.blue);
+      }
+    }
+  }
+
+  // Phares à l'avant, feux à l'arrière (plus gros au freinage) : seulement du côté visible.
+  if (!detailed) return;
+  const front = ux + uy > 0;
+  const zl = ag.kind === AGENT_BUS ? 3.2 : 2.7;
+  for (const s of [0.6, -0.6]) {
+    if (front) {
+      const h = at(L * 1.0, W * s, zl);
+      canvas.drawCircle(h.x, h.y, 0.7, P.head);
+    } else {
+      const r = at(-L * 1.0, W * s, zl);
+      canvas.drawCircle(r.x, r.y, v.stopped ? 0.95 : 0.65, P.tail);
+    }
+  }
+}
+
 /**
  * Dessine les agents visibles à l'instant `timeMs`. Worklet : s'exécute sur le
  * thread UI. Les agents hors de `view` sont ignorés (culling).
@@ -1349,6 +1617,8 @@ export function drawAgents(
   night = 0,
   /** Hauteurs du sol dans le repère de la vue (voir viewHeights). */
   vh?: number[],
+  /** Zoom de la caméra : de loin, les véhicules sont dessinés plus simplement. */
+  zoom = 1,
 ) {
   'worklet';
   const { originX, originY } = getOrigin(gridSize);
@@ -1410,23 +1680,8 @@ export function drawAgents(
 
   if (scene.lines?.length) drawLineVehicles(canvas, scene, t, gridSize, view, rot, vh);
 
-  const nColors = BODY.length;
   const shadows = Skia.PathBuilder.Make();
-  const light: SkPathBuilder[] = [];
-  const mid: SkPathBuilder[] = [];
-  const dark: SkPathBuilder[] = [];
-  for (let c = 0; c < nColors; c++) {
-    light.push(Skia.PathBuilder.Make());
-    mid.push(Skia.PathBuilder.Make());
-    dark.push(Skia.PathBuilder.Make());
-  }
-  const glass = Skia.PathBuilder.Make();
-  const glassDark = Skia.PathBuilder.Make();
-  const wheels = Skia.PathBuilder.Make();
-  const headlights = Skia.PathBuilder.Make();
-  const red = Skia.PathBuilder.Make();
-  const blue = Skia.PathBuilder.Make();
-  const scrap = Skia.PathBuilder.Make();
+  const vehicles: typeof visible = [];
   const shirts = SHIRT_COLORS.map(() => Skia.PathBuilder.Make());
   const heads = Skia.PathBuilder.Make();
   const bubbles: { x: number; y: number; kind: number }[] = [];
@@ -1471,7 +1726,7 @@ export function drawAgents(
 
   for (const v of visible) {
     const ag = scene.agents[v.a];
-    const { gx, gy, ux, uy } = v;
+    const { gx, gy } = v;
     const oY = originY - v.z;
     const wx = originX + (gx - gy) * HALF_W;
     const wy = oY + (gx + gy) * HALF_H;
@@ -1486,86 +1741,8 @@ export function drawAgents(
       continue;
     }
 
-    // Gabarits : demi-longueur L, demi-largeur W, hauteurs de caisse et de toit.
-    const isAmbulance = ag.kind === AGENT_AMBULANCE;
-    const isTruck = ag.kind === AGENT_TRUCK || ag.kind === AGENT_FIRETRUCK || ag.kind === AGENT_GARBAGE || ag.kind === AGENT_PLOW || isAmbulance;
-    const isBus = ag.kind === AGENT_BUS;
-    const L = isBus ? 0.36 : isAmbulance ? 0.23 : isTruck ? 0.27 : 0.19;
-    const W = isBus || isTruck ? 0.12 : 0.1;
-    const c = ag.color;
-    const vx = -uy;
-    const vy = ux;
-
-    // Ombre portée.
-    const sh = [
-      [gx + ux * L + vx * W, gy + uy * L + vy * W],
-      [gx + ux * L - vx * W, gy + uy * L - vy * W],
-      [gx - ux * L - vx * W, gy - uy * L - vy * W],
-      [gx - ux * L + vx * W, gy - uy * L + vy * W],
-    ].map(([sx, sy]) => ({ x: originX + (sx - sy) * HALF_W + 3, y: oY + (sx + sy) * HALF_H + 1.5 }));
-    shadows.addPoly(sh, true);
-
-    // Roues : 4 petits disques sombres sous la caisse.
-    for (const [l, s] of [
-      [0.65, 1],
-      [0.65, -1],
-      [-0.65, 1],
-      [-0.65, -1],
-    ]) {
-      const qx = gx + ux * L * l + vx * W * s * 1.02;
-      const qy = gy + uy * L * l + vy * W * s * 1.02;
-      wheels.addCircle(originX + (qx - qy) * HALF_W, oY + (qx + qy) * HALF_H - 1.2, 1.5);
-    }
-
-    if (isBus) {
-      // Caisse unique haute, bande vitrée continue.
-      addBox(light[c], mid[c], dark[c], gx, gy, 1.5, 9, ux, uy, -L, L, W, originX, oY);
-      addBox(light[c], glass, glassDark, gx, gy, 5, 7.5, ux, uy, -L * 0.98, L * 0.98, W * 1.01, originX, oY);
-    } else if (isTruck) {
-      // Cabine à l'avant + caisse/citerne/benne à l'arrière.
-      const cargo = ag.kind === AGENT_TRUCK ? COLOR_TRUCK : c;
-      addBox(light[cargo], mid[cargo], dark[cargo], gx, gy, 1.5, 9, ux, uy, -L, L * 0.25, W, originX, oY);
-      // Ambulance : bande rouge sur les flancs de la cellule sanitaire.
-      if (isAmbulance) addBox(scrap, red, red, gx, gy, 4.5, 6, ux, uy, -L * 0.98, L * 0.2, W * 1.01, originX, oY);
-      addBox(light[c], mid[c], dark[c], gx, gy, 1.5, 7, ux, uy, L * 0.3, L, W * 0.95, originX, oY);
-      addBox(light[c], glass, glassDark, gx, gy, 4.2, 6.6, ux, uy, L * 0.32, L * 0.98, W * 0.97, originX, oY);
-    } else {
-      // Voiture : caisse basse + habitacle vitré en retrait + toit.
-      addBox(light[c], mid[c], dark[c], gx, gy, 1.5, 4.5, ux, uy, -L, L, W, originX, oY);
-      addBox(light[c], glass, glassDark, gx, gy, 4.5, 7.2, ux, uy, -L * 0.45, L * 0.4, W * 0.82, originX, oY);
-      // Phares (avant) et feux (arrière).
-      const hx = gx + ux * L * 1.01;
-      const hy = gy + uy * L * 1.01;
-      headlights.addCircle(originX + (hx - hy) * HALF_W, oY + (hx + hy) * HALF_H - 3, 0.9);
-      const rx = gx - ux * L * 1.01;
-      const ry = gy - uy * L * 1.01;
-      // Feux stop plus gros quand la voiture freine (arrêtée au feu).
-      red.addCircle(originX + (rx - ry) * HALF_W, oY + (rx + ry) * HALF_H - 3, v.stopped ? 1.3 : 0.8);
-    }
-
-    // Gyrophares clignotants (police et ambulance bleu/rouge, pompiers rouge).
-    if (ag.kind === AGENT_POLICE || ag.kind === AGENT_FIRETRUCK || isAmbulance) {
-      const z = ag.kind === AGENT_POLICE ? 8.4 : 10.2;
-      const lx = gx + ux * (ag.kind === AGENT_POLICE ? 0 : L * 0.6);
-      const ly = gy + uy * (ag.kind === AGENT_POLICE ? 0 : L * 0.6);
-      const sx = originX + (lx - ly) * HALF_W;
-      const sy = oY + (lx + ly) * HALF_H - z;
-      if (ag.kind === AGENT_POLICE || isAmbulance) {
-        (blink ? red : blue).addCircle(sx - 1.4, sy, 1.3);
-        (blink ? blue : red).addCircle(sx + 1.4, sy, 1.3);
-      } else if (blink) {
-        red.addCircle(sx, sy, 1.6);
-      }
-    }
-    // Chasse-neige : lame à l'avant et gyrophare orange.
-    if (ag.kind === AGENT_PLOW) {
-      addBox(scrap, dark[c], dark[c], gx, gy, 0.5, 3, ux, uy, L * 1.0, L * 1.18, W * 1.35, originX, oY);
-      if (blink) {
-        const lx = gx + ux * L * 0.6;
-        const ly = gy + uy * L * 0.6;
-        lamps[LIGHT_YELLOW].addCircle(originX + (lx - ly) * HALF_W, oY + (lx + ly) * HALF_H - 10.2, 1.5);
-      }
-    }
+    // Véhicules : dessinés un par un, de l'arrière vers l'avant, après les ombres.
+    vehicles.push(v);
   }
 
   canvas.drawPath(poles.detach(), makePaint('#2c3e50'));
@@ -1574,19 +1751,32 @@ export function drawAgents(
   canvas.drawPath(lamps[LIGHT_YELLOW].detach(), makePaint('#f1c40f'));
   canvas.drawPath(lamps[LIGHT_RED].detach(), makePaint('#ff3b30'));
 
-  canvas.drawPath(shadows.detach(), makePaint('#000000', 0.25));
-  canvas.drawPath(wheels.detach(), makePaint('#17202a'));
-  for (let c = 0; c < nColors; c++) {
-    canvas.drawPath(mid[c].detach(), makePaint(BODY_MID[c]));
-    canvas.drawPath(dark[c].detach(), makePaint(BODY_DARK[c]));
-    canvas.drawPath(light[c].detach(), makePaint(BODY_LIGHT[c]));
+  // Ombres douces sous les véhicules, puis les véhicules eux-mêmes.
+  const vShadows = Skia.PathBuilder.Make();
+  for (const v of vehicles) {
+    const ag = scene.agents[v.a];
+    const d = vehicleSize(ag.kind);
+    const sx = originX + (v.gx - v.gy) * HALF_W + 2.2;
+    const sy = originY - v.z + (v.gx + v.gy) * HALF_H + 1.4;
+    // Ellipse orientée : on l'approche par un octogone dans le repère du véhicule.
+    const vx = -v.uy;
+    const vy = v.ux;
+    const pts: { x: number; y: number }[] = [];
+    for (let k = 0; k < 8; k++) {
+      const an = (k / 8) * Math.PI * 2;
+      const la = Math.cos(an) * d.L * 1.08;
+      const lb = Math.sin(an) * d.W * 1.25;
+      const qx = v.ux * la + vx * lb;
+      const qy = v.uy * la + vy * lb;
+      pts.push({ x: sx + (qx - qy) * HALF_W, y: sy + (qx + qy) * HALF_H });
+    }
+    vShadows.addPoly(pts, true);
   }
-  canvas.drawPath(glass.detach(), makePaint('#85c1e9'));
-  canvas.drawPath(glassDark.detach(), makePaint('#2e6f9e'));
-  canvas.drawPath(headlights.detach(), makePaint('#fef9e7'));
-  canvas.drawPath(red.detach(), makePaint('#ff3b30'));
-  canvas.drawPath(blue.detach(), makePaint('#2f80ff'));
-  scrap.detach();
+  canvas.drawPath(shadows.detach(), makePaint('#000000', 0.25));
+  canvas.drawPath(vShadows.detach(), makePaint('#000000', 0.28));
+  const kit = vehiclePaints();
+  const detailed = zoom >= 0.9;
+  for (const v of vehicles) drawVehicle(canvas, kit, scene.agents[v.a], v, originX, originY - v.z, blink, detailed);
 
   const outline = makePaint('#000000', 0.35);
   outline.setStyle(PaintStyle.Stroke);

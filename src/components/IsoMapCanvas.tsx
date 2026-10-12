@@ -177,7 +177,7 @@ function AgentsLayer({
         // Véhicules assombris par la nuit, puis phares et feux par-dessus. Les bâtiments,
         // dessinés dans le calque suivant, masquent naturellement les phares cachés.
         canvas.saveLayer();
-        drawAgents(canvas, scene, now, gridSize, view, rotation, 'bodies', n, vh);
+        drawAgents(canvas, scene, now, gridSize, view, rotation, 'bodies', n, vh, camera.scale.get());
         const tint = Skia.Paint();
         tint.setColor(Skia.Color(NIGHT_TINT));
         tint.setAlphaf(n * 0.62);
@@ -185,7 +185,7 @@ function AgentsLayer({
         canvas.drawRect({ x: view.x0, y: view.y0, width: view.x1 - view.x0, height: view.y1 - view.y0 }, tint);
         canvas.restore();
         if (n > 0.15) drawAgents(canvas, scene, now, gridSize, view, rotation, 'lights', n, vh);
-      } else drawAgents(canvas, scene, now, gridSize, view, rotation, 'bodies', 0, vh);
+      } else drawAgents(canvas, scene, now, gridSize, view, rotation, 'bodies', 0, vh, camera.scale.get());
     }, { x: 0, y: 0, ...world }), RECYCLE_PICTURES);
     // Dépendances explicites : la scène n'est recopiée vers le thread UI que si elle change.
   }, [scene, gridSize, rotation, top, showMetro, camera, vh, world]);
