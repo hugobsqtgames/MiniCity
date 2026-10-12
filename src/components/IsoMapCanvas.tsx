@@ -29,6 +29,7 @@ import {
   drawAgents,
   drawFires,
   drawMetro,
+  viewHeights,
   type AgentsScene,
 } from '../engine/agents';
 import { camera as sharedCamera, focusRequest } from '../engine/cameraBridge';
@@ -128,7 +129,7 @@ function useVisiblePicture(
       }
       if (layer) canvas.restore();
     }, { x: 0, y: 0, ...worldRect });
-  }, [pictures, bounds, alpha]);
+  }, [pictures, bounds, alpha, cam, worldRect]);
 }
 
 /** Voile de nuit appliqué uniquement aux pixels déjà dessinés du calque (mode srcATop). */
@@ -153,7 +154,9 @@ function AgentsLayer({
   top?: boolean;
   showMetro?: boolean;
 }) {
-  const world = getWorldSize(gridSize);
+  const world = useMemo(() => getWorldSize(gridSize), [gridSize]);
+  // Hauteurs du relief dans le repère de la vue (pour cacher les véhicules derrière les collines).
+  const vh = useMemo(() => (top ? undefined : viewHeights(scene.heights, gridSize, rotation)), [scene.heights, gridSize, rotation, top]);
   const picture = useDerivedValue(() => {
     const now = clock.get();
     const visible = camera.scale.get() >= AGENTS_MIN_SCALE;
@@ -170,17 +173,18 @@ function AgentsLayer({
         // Véhicules assombris par la nuit, puis phares et feux par-dessus. Les bâtiments,
         // dessinés dans le calque suivant, masquent naturellement les phares cachés.
         canvas.saveLayer();
-        drawAgents(canvas, scene, now, gridSize, view, rotation, 'bodies', n);
+        drawAgents(canvas, scene, now, gridSize, view, rotation, 'bodies', n, vh);
         const tint = Skia.Paint();
         tint.setColor(Skia.Color(NIGHT_TINT));
         tint.setAlphaf(n * 0.62);
         tint.setBlendMode(BlendMode.SrcATop);
         canvas.drawRect({ x: view.x0, y: view.y0, width: view.x1 - view.x0, height: view.y1 - view.y0 }, tint);
         canvas.restore();
-        if (n > 0.15) drawAgents(canvas, scene, now, gridSize, view, rotation, 'lights', n);
-      } else drawAgents(canvas, scene, now, gridSize, view, rotation, 'bodies', 0);
+        if (n > 0.15) drawAgents(canvas, scene, now, gridSize, view, rotation, 'lights', n, vh);
+      } else drawAgents(canvas, scene, now, gridSize, view, rotation, 'bodies', 0, vh);
     }, { x: 0, y: 0, ...world });
-  });
+    // Dépendances explicites : la scène n'est recopiée vers le thread UI que si elle change.
+  }, [scene, gridSize, rotation, top, showMetro, camera, vh, world]);
   return <Picture picture={picture} />;
 }
 
@@ -471,7 +475,9 @@ export function IsoMapCanvas() {
 
   // Le trafic se recalcule une fois la construction terminée (pas à chaque tuile peinte),
   // en tâche de fond par tranches de quelques ms pour ne jamais bloquer les gestes.
-  const agentTiles = useDebounced(tiles, 600);
+  // (après un changement de taille de carte, on attend que la carte retardée soit à jour)
+  const delayed = useDebounced(tiles, 600);
+  const agentTiles = delayed.length === gridSize * gridSize ? delayed : tiles;
   const issueKey = useGameStore((s) => cityIssues(s.stats, Math.max(s.taxes.R, s.taxes.C, s.taxes.I)).join(','));
   const [built, setBuilt] = useState<{ key: string; scene: AgentsScene }>({ key: '', scene: EMPTY_SCENE });
   const wantedKey = agentsKey(agentTiles, gridSize, population, riders, agentScale, issueKey ? issueKey.split(',').map(Number) : [], `${winter}`);
@@ -498,10 +504,12 @@ export function IsoMapCanvas() {
     // Les incendies restent visibles même quand le trafic est désactivé.
     return settings.showAgents ? full : { ...EMPTY_SCENE, fires: full.fires, metro: full.metro, heights: full.heights };
   }, [settings.showAgents, built.scene, crowds]);
+  // Calque du dessus : seulement les incendies et le métro (pas de recopie des PNJ).
+  const topScene = useMemo(() => ({ ...EMPTY_SCENE, fires: scene.fires, metro: scene.metro }), [scene.fires, scene.metro]);
   usePerformanceGovernor(settings.quality);
 
   const origin = getOrigin(gridSize);
-  const world = getWorldSize(gridSize);
+  const world = useMemo(() => getWorldSize(gridSize), [gridSize]);
 
   // Carte de couverture du service dont l'outil est sélectionné (police, pompiers, métro…).
   const coverageService = COVERAGE_TOOL[tool];
@@ -684,7 +692,7 @@ export function IsoMapCanvas() {
     sharedCamera.height.set(screenH);
   }, [screenW, screenH]);
   const shake = useSharedValue(0);
-  const camera: Camera = { tx, ty, scale, width: screenW, height: screenH };
+  const camera: Camera = useMemo(() => ({ tx, ty, scale, width: screenW, height: screenH }), [tx, ty, scale, screenW, screenH]);
 
   const transform = useDerivedValue(() => [
     { translateX: tx.get() + shake.get() },
@@ -1007,7 +1015,7 @@ export function IsoMapCanvas() {
           <Group transform={transform}>
             <EffectsLayer haze={haze} anim={anim} clock={clock} gridSize={gridSize} spinners={spinners} bursts={bursts} night={night} runways={runways} />
             <AgentsLayer
-              scene={scene}
+              scene={topScene}
               gridSize={gridSize}
               camera={camera}
               clock={clock}

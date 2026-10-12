@@ -159,8 +159,8 @@ export function getAdvice(
       advisor: 'services',
       severity: 2,
       title: `Niveau d’études faible (${s.educationLevel} %)`,
-      text: pop >= 1000 ? 'Les tours de bureaux réclament des diplômés : complétez les écoles par un lycée (et plus tard l’université).' : 'Construisez des écoles près des quartiers résidentiels.',
-      tool: pop >= 1000 ? 'highschool' : 'school',
+      text: s.coverage.education < 60 ? 'Construisez d’abord des écoles près des quartiers résidentiels, puis un lycée.' : 'Les tours de bureaux réclament des diplômés : complétez les écoles par un lycée (et plus tard l’université).',
+      tool: s.coverage.education < 60 ? 'school' : 'highschool',
     });
   }
   if (s.parkingShortage >= 3) {
@@ -231,14 +231,14 @@ export function getAdvice(
     out.push({ id: 'crime', advisor: 'safety', severity: worstCrime.crime > 45 ? 3 : 2, title: `Criminalité élevée ${aLieu(worstCrime.name)}`, text: `${worstCrime.crime} % de criminalité dans ce quartier. Construisez un commissariat au cœur du quartier ou augmentez le budget de la police.`, target: { x: worstCrime.fx, y: worstCrime.fy }, view: 'crime', tool: 'police' });
   }
   if (pop > 500 && s.coverage.fire < 60) {
-    out.push({ id: 'fire', advisor: 'safety', severity: 2, title: 'Casernes de pompiers insuffisantes', text: `Seulement ${s.coverage.fire} % des bâtiments sont protégés. Un incendie non maîtrisé détruit le bâtiment en 4 mois.`, target: find(tiles, (t, i) => isZone(t.type) && t.density > 0 && a.cov.FIRE[i] === 0), tool: 'fire' });
+    out.push({ id: 'fire', advisor: 'safety', severity: 2, title: 'Casernes de pompiers insuffisantes', text: `Seulement ${s.coverage.fire} % des bâtiments sont protégés. Un incendie non maîtrisé détruit le bâtiment en 3 mois.`, target: find(tiles, (t, i) => isZone(t.type) && t.density > 0 && a.cov.FIRE[i] === 0), tool: 'fire' });
   }
 
   // Services.
-  if (pop > 1500 && s.coverage.health < 45) out.push({ id: 'health', advisor: 'services', severity: 1, title: 'Peu d’hôpitaux', text: `${s.coverage.health} % des habitants ont un hôpital proche. La santé compte beaucoup dans la satisfaction.`, target: find(tiles, (t, i) => t.type === 'R' && t.density > 0 && a.cov.HOSPITAL[i] === 0), tool: 'hospital' });
-  if (pop > 1500 && s.coverage.education < 45) out.push({ id: 'school', advisor: 'services', severity: 1, title: 'Il manque des écoles', text: `${s.coverage.education} % des habitants ont une école proche. L’éducation augmente la valeur des quartiers.`, target: find(tiles, (t, i) => t.type === 'R' && t.density > 0 && a.cov.SCHOOL[i] === 0), tool: 'school' });
+  if (pop > 1500 && s.coverage.health < 45) out.push({ id: 'health', advisor: 'services', severity: 1, title: 'Peu d’hôpitaux', text: `${s.coverage.health} % des bâtiments ont un hôpital proche. La santé compte beaucoup dans la satisfaction.`, target: find(tiles, (t, i) => t.type === 'R' && t.density > 0 && a.cov.HOSPITAL[i] === 0), tool: 'hospital' });
+  if (pop > 1500 && s.coverage.education < 45) out.push({ id: 'school', advisor: 'services', severity: 1, title: 'Il manque des écoles', text: `${s.coverage.education} % des bâtiments ont une école proche. L’éducation augmente la valeur des quartiers.`, target: find(tiles, (t, i) => t.type === 'R' && t.density > 0 && a.cov.SCHOOL[i] === 0), tool: 'school' });
   if (pop > 300 && s.coverage.waste < 70) out.push({ id: 'waste', advisor: 'environment', severity: s.garbage > 25 ? 3 : 2, title: 'Les ordures ne sont pas ramassées', text: `${100 - s.coverage.waste} % des bâtiments ne sont pas desservis : les déchets s’entassent et les habitants s’en vont.`, target: find(tiles, (t, i) => isZone(t.type) && t.density > 0 && a.cov.LANDFILL[i] === 0 && a.cov.INCINERATOR[i] === 0), view: 'garbage', tool: 'landfill' });
-  if (s.landfill > 80) out.push({ id: 'landfill', advisor: 'environment', severity: 2, title: 'Les décharges débordent', text: `Remplies à ${s.landfill} %. Un incinérateur traite les déchets sans limite, le recyclage en réduit la quantité.`, target: find(tiles, (t) => t.type === 'LANDFILL'), tool: 'recycling' });
+  if (s.landfill > 80) out.push({ id: 'landfill', advisor: 'environment', severity: 2, title: 'Les décharges débordent', text: `Remplies à ${s.landfill} %. Un incinérateur traite beaucoup de déchets sans se remplir, le recyclage en réduit la quantité.`, target: find(tiles, (t) => t.type === 'LANDFILL'), tool: 'recycling' });
 
   // Environnement.
   if (pop > 1000 && s.pollution > 32) {
@@ -267,7 +267,7 @@ export function getAdvice(
   if (s.unemployment > 12 && pop > 200) out.push({ id: 'jobs', advisor: 'urbanism', severity: 2, title: `${s.unemployment} % de chômage`, text: 'Les habitants manquent d’emplois : zonez du commerce et de l’industrie accessibles par la route.', tool: 'zoneC' });
   const emptyR = tiles.filter((t) => t.type === 'R' && t.density === 0).length;
   if (pop > 0 && emptyR < 4 && s.unemployment < 5) out.push({ id: 'zone-r', advisor: 'urbanism', severity: 1, title: 'Plus de place pour loger', text: 'Toutes les parcelles résidentielles sont construites : zonez de nouveaux quartiers.', tool: 'zoneR' });
-  if (pop > 3000 && s.commute > 22) out.push({ id: 'commute', advisor: 'transport', severity: 1, title: `Trajets de ${s.commute} minutes en moyenne`, text: 'Les emplois sont trop loin des logements. Mélangez commerce et logements, et développez bus et métro.', view: 'traffic', tool: 'busstop' });
+  if (pop > 3000 && s.commute > 22) out.push({ id: 'commute', advisor: 'transport', severity: 1, title: `Trajets longs (${s.commute} cases en moyenne)`, text: 'Les emplois sont trop loin des logements. Mélangez commerce et logements, et développez bus et métro.', view: 'traffic', tool: 'busstop' });
 
   // Saison : chasse-neige.
   if (seasonOf(ctx.month + 1) === 'winter' && policy.funding.transport < 80 && pop > 500) {

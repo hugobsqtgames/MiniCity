@@ -11,6 +11,7 @@ import {
   type Taxes,
 } from '../sim/constants';
 import { EMPTY_COUNTERS, type Counters } from '../sim/challenges';
+import { districtMap } from '../sim/districts';
 import { MISSIONS, type Mission } from '../sim/missions';
 import { EMPTY_RECORDS, sanitizeRecords, type CityRecords } from '../sim/records';
 import type { CityEvent, Demand, Epidemic, Weather } from '../sim/simulation';
@@ -77,6 +78,8 @@ type SaveFile = {
   rad?: string;
   /** Parcelles sinistrées à reconstruire en priorité. */
   ruin?: string;
+  /** Valeur foncière (2 chiffres par tuile). */
+  val?: string;
   elev?: string;
   line?: string;
   spec?: string;
@@ -169,6 +172,7 @@ export function serialize(game: SavedGame): string {
     flood: digits(game.tiles, (t) => t.flood),
     rad: digits(game.tiles, (t) => t.rad),
     ruin: digits(game.tiles, (t) => (t.value < 0 ? 1 : 0)),
+    val: game.tiles.map((t) => String(Math.max(0, Math.min(99, Math.round(t.value) || 0))).padStart(2, '0')).join(''),
     elev: digits(game.tiles, (t) => t.elev),
     line: digits(game.tiles, (t) => t.line),
     spec: digits(game.tiles, (t) => t.spec),
@@ -205,7 +209,10 @@ export function deserialize(json: string): SavedGame | null {
   try {
     const f = JSON.parse(json) as SaveFile;
     const n = f.gridSize * f.gridSize;
-    if ((f.v !== 1 && f.v !== 2 && f.v !== 3) || f.types.length !== n || f.density.length !== n) return null;
+    if ((f.v !== 1 && f.v !== 2 && f.v !== 3) || !Number.isInteger(f.gridSize) || f.gridSize < 1 || f.gridSize > 200) return null;
+    if (typeof f.types !== 'string' || typeof f.density !== 'string' || f.types.length !== n || f.density.length !== n) return null;
+    const fin = (v: unknown, d: number) => (typeof v === 'number' && Number.isFinite(v) ? v : d);
+    const districts = districtMap(f.gridSize).list.length;
     const tiles = createEmptyMap(f.gridSize);
     const num = (s: string | undefined, i: number) => (s ? Number(s[i]) || 0 : 0);
     for (let i = 0; i < n; i++) {
@@ -216,6 +223,7 @@ export function deserialize(json: string): SavedGame | null {
       tiles[i].garbage = num(f.garbage, i);
       tiles[i].flood = num(f.flood, i);
       tiles[i].rad = num(f.rad, i);
+      if (f.val && f.val.length === n * 2) tiles[i].value = Number(f.val.slice(i * 2, i * 2 + 2)) || 0;
       if (num(f.ruin, i) === 1) tiles[i].value = -1;
       tiles[i].elev = Math.min(3, num(f.elev, i));
       tiles[i].line = num(f.line, i) & 3;
@@ -225,30 +233,36 @@ export function deserialize(json: string): SavedGame | null {
     return {
       gridSize: f.gridSize,
       tiles,
-      treasury: f.treasury,
-      month: f.month,
+      treasury: fin(f.treasury, 0),
+      month: Math.max(0, Math.floor(fin(f.month, 0))),
       taxes: { ...DEFAULT_TAXES, ...(f.taxes ?? { R: legacyTax, C: legacyTax, I: legacyTax }) },
       funding: { ...DEFAULT_FUNDING, ...f.funding },
       ordinances: { ...DEFAULT_ORDINANCES, ...f.ordinances },
       disasters: f.disasters ?? false,
-      demand: f.demand,
-      speed: f.speed,
-      history: { ...EMPTY_HISTORY, ...f.history },
-      news: f.news ?? [],
-      rotation: f.rotation ?? 0,
-      cityName: f.cityName ?? 'Ma ville',
-      counters: { ...EMPTY_COUNTERS, ...f.counters },
-      challenges: f.challenges ?? {},
+      demand: { r: fin(f.demand?.r, 0), c: fin(f.demand?.c, 0), i: fin(f.demand?.i, 0) },
+      speed: f.speed === 1 || f.speed === 2 || f.speed === 3 ? f.speed : 1,
+      history: Object.fromEntries(
+        (Object.keys(EMPTY_HISTORY) as (keyof History)[]).map((k) => [k, Array.isArray(f.history?.[k]) ? f.history![k].filter((v) => Number.isFinite(v)) : []]),
+      ) as History,
+      news: Array.isArray(f.news) ? f.news.filter((e) => e && typeof e.text === 'string') : [],
+      rotation: f.rotation === 1 || f.rotation === 2 || f.rotation === 3 ? f.rotation : 0,
+      cityName: typeof f.cityName === 'string' && f.cityName ? f.cityName.slice(0, 24) : 'Ma ville',
+      counters: Object.fromEntries(Object.entries(EMPTY_COUNTERS).map(([k, d]) => [k, fin((f.counters as Record<string, unknown> | undefined)?.[k], d)])) as Counters,
+      challenges: f.challenges && typeof f.challenges === 'object' ? Object.fromEntries(Object.entries(f.challenges).filter(([, v]) => Number.isFinite(v))) : {},
       isDemo: f.isDemo ?? false,
       weather: f.weather ?? 'clear',
       cityEvents: Array.isArray(f.cityEvents) ? f.cityEvents : [],
       forcedEvents: Array.isArray(f.forcedEvents) ? f.forcedEvents : [],
       funDisasters: f.funDisasters ?? false,
-      epidemic: validEpidemic(f.epidemic),
-      missions: Array.isArray(f.missions) ? f.missions.filter((m) => m && MISSIONS[m.kind] !== undefined && Number.isFinite(m.deadline)) : [],
+      epidemic: validEpidemic(f.epidemic, districts),
+      missions: Array.isArray(f.missions)
+        ? f.missions.filter((m) => m && MISSIONS[m.kind] !== undefined && Number.isFinite(m.deadline) && Number.isInteger(m.district) && m.district >= 0 && m.district < districts)
+        : [],
       missionSeq: Number.isFinite(f.missionSeq) ? f.missionSeq! : 0,
       records: f.records ? sanitizeRecords(f.records) : EMPTY_RECORDS,
-      timelapse: Array.isArray(f.timelapse) ? f.timelapse.filter((fr) => fr && typeof fr.map === 'string' && fr.map.length === fr.size * fr.size).slice(-TIMELAPSE_MAX) : [],
+      timelapse: Array.isArray(f.timelapse)
+        ? f.timelapse.filter((fr) => fr && typeof fr.map === 'string' && typeof fr.dens === 'string' && fr.map.length === fr.size * fr.size && fr.dens.length === fr.map.length).slice(-TIMELAPSE_MAX)
+        : [],
     };
   } catch {
     return null;
@@ -299,10 +313,10 @@ export function makeFrame(tiles: Tile[], gridSize: number, month: number, popula
   return { month, population, size: previewSize, map: preview, dens };
 }
 
-function validEpidemic(e: unknown): Epidemic | null {
+function validEpidemic(e: unknown, districts: number): Epidemic | null {
   if (!e || typeof e !== 'object') return null;
   const { district, severity, months } = e as Epidemic;
-  if (![district, severity, months].every(Number.isFinite) || severity <= 0) return null;
+  if (![district, severity, months].every(Number.isFinite) || severity <= 0 || !Number.isInteger(district) || district < 0 || district >= districts) return null;
   return { district, severity: Math.min(100, severity), months };
 }
 

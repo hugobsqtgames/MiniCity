@@ -232,7 +232,7 @@ export function TileInfo() {
           <Text style={styles.coords}>
             ({info.x}, {info.y})
           </Text>
-          <Pressable onPress={() => clear('inspect')} hitSlop={10}>
+          <Pressable onPress={() => clear('inspect')} hitSlop={10} accessibilityRole="button" accessibilityLabel="Fermer la fiche">
             <Text style={styles.close}>✕</Text>
           </Pressable>
         </View>

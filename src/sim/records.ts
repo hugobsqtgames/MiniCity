@@ -62,7 +62,7 @@ const finite = (v: number) => (Number.isFinite(v) ? v : 0);
 export function updateRecords(r: CityRecords, f: MonthFacts): { records: CityRecords; broken: (keyof CityRecords)[] } {
   const out: CityRecords = { ...r };
   const broken: (keyof CityRecords)[] = [];
-  const up = (key: 'population' | 'treasury' | 'happiness' | 'bestMonth' | 'surplusStreak' | 'tourists', v: number) => {
+  const up = (key: 'population' | 'treasury' | 'happiness' | 'surplusStreak' | 'tourists', v: number) => {
     v = finite(v);
     if (v > r[key].value) {
       out[key] = { value: v, month: f.month };
@@ -73,10 +73,16 @@ export function updateRecords(r: CityRecords, f: MonthFacts): { records: CityRec
   up('treasury', Math.round(f.treasury));
   // La satisfaction d'une ville vide ne compte pas.
   if (f.population >= 100) up('happiness', f.happiness);
-  up('bestMonth', Math.round(f.net));
+  // Meilleur et pire mois : le premier mois joué sert de référence (même négatif).
+  const unset = (e: RecordEntry) => e.month === 0 && e.value === 0;
+  const net = Math.round(finite(f.net));
+  if (unset(r.bestMonth) || net > r.bestMonth.value) {
+    out.bestMonth = { value: net, month: f.month };
+    if (!unset(r.bestMonth)) broken.push('bestMonth');
+  }
   up('surplusStreak', f.streak);
   up('tourists', f.tourists);
-  if (finite(f.net) < r.worstMonth.value) out.worstMonth = { value: Math.round(f.net), month: f.month };
+  if (unset(r.worstMonth) || net < r.worstMonth.value) out.worstMonth = { value: net, month: f.month };
   for (const d of f.disasters) {
     if (d.damage > out.disaster.value) {
       out.disaster = { value: d.damage, month: f.month, kind: d.kind };

@@ -1,7 +1,7 @@
 import { Canvas, Path, Skia } from '@shopify/react-native-skia';
 import { useEffect } from 'react';
 import { StyleSheet, View } from 'react-native';
-import Animated, { FadeOut, useAnimatedStyle, useSharedValue, withRepeat, withTiming } from 'react-native-reanimated';
+import Animated, { cancelAnimation, FadeOut, useAnimatedStyle, useSharedValue, withRepeat, withTiming } from 'react-native-reanimated';
 
 import { PALETTE, shade } from '../engine/palette';
 import { Text } from './Text';
@@ -56,9 +56,10 @@ function Logo() {
 export function SplashScreen() {
   const pulse = useSharedValue(0.4);
   useEffect(() => {
-    pulse.value = withRepeat(withTiming(1, { duration: 700 }), -1, true);
+    pulse.set(withRepeat(withTiming(1, { duration: 700 }), -1, true));
+    return () => cancelAnimation(pulse);
   }, [pulse]);
-  const dotStyle = useAnimatedStyle(() => ({ opacity: pulse.value }));
+  const dotStyle = useAnimatedStyle(() => ({ opacity: pulse.get() }));
 
   return (
     <Animated.View exiting={FadeOut.duration(450)} style={[StyleSheet.absoluteFill, styles.root]}>

@@ -4,6 +4,7 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { IsoMapCanvas } from './src/components/IsoMapCanvas';
+import { useBackButton } from './src/hooks/useBackButton';
 import { useGameLoop } from './src/hooks/useGameLoop';
 import { usePersistence } from './src/hooks/usePersistence';
 import { useGameStore } from './src/store/useGameStore';
@@ -28,6 +29,7 @@ function Game() {
   const openMenu = useGameStore((s) => s.openMenu);
   const showMinimap = useGameStore((s) => s.settings.minimap);
   useGameLoop();
+  useBackButton();
 
   return (
     <View style={styles.root}>

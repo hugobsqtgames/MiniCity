@@ -28,12 +28,15 @@ export type MapLayers = {
 type Cache = { tiles: Tile[]; size: number; blocks: Block[]; layers: MapLayers; looks: string[] };
 
 /** Blocs reconstruits par passe quand la saison change (le reste suit au passage suivant). */
-const SEASON_BLOCKS_PER_PASS = 12;
+const SEASON_BLOCKS_PER_PASS = 4;
 
 /** Ce qui a un rendu : type, densité, réseaux, incendie, eau, ordures visibles, inondation. */
 const visuallyEqual = (a: Tile, b: Tile) =>
   a === b ||
-  (a.type === b.type &&
+  // Vue tournée : la tuile à cet index vient d'ailleurs (arbres, styles, hauteurs changent).
+  ((a.ox ?? a.x) === (b.ox ?? b.x) &&
+    (a.oy ?? a.y) === (b.oy ?? b.y) &&
+    a.type === b.type &&
     a.density === b.density &&
     a.powered === b.powered &&
     a.water === b.water &&
@@ -91,6 +94,29 @@ class LayerCache {
         any = true;
       }
     }
+    // Ponts suspendus : toute la travée dépend de chacune de ses tuiles.
+    if (any) {
+      const deck = (t: Tile | undefined) => !!t && t.lake && (t.type === 'ROAD' || t.type === 'AVENUE' || t.type === 'HIGHWAY');
+      const marks: number[] = [];
+      for (let i = 0; i < tiles.length; i++) {
+        if (!changed[i] || !(deck(tiles[i]) || deck(prev.tiles[i]))) continue;
+        const x0 = i % size;
+        const y0 = (i - x0) / size;
+        for (const [dx, dy] of [
+          [1, 0],
+          [-1, 0],
+          [0, 1],
+          [0, -1],
+        ]) {
+          for (let x = x0 + dx, y = y0 + dy; x >= 0 && y >= 0 && x < size && y < size; x += dx, y += dy) {
+            const j = y * size + x;
+            if (!deck(tiles[j]) && !deck(prev.tiles[j])) break;
+            marks.push(j);
+          }
+        }
+      }
+      for (const j of marks) changed[j] = 1;
+    }
     if (!any && !stale) {
       this.last = { ...prev, tiles };
       return prev.layers;
@@ -129,6 +155,7 @@ class LayerCache {
       if (inner || border) next.ground[k] = buildGroundPicture(tiles, size, b);
       // Les voisines comptent aussi pour les bâtiments (relief : sol redessiné devant un immeuble).
       if (inner || border) {
+        looks[k] = look;
         next.shadows[k] = buildShadowPicture(tiles, size, b);
         next.buildings[k] = buildBuildingPicture(tiles, size, b);
         next.lights[k] = buildLightsPicture(tiles, size, b);
@@ -157,7 +184,7 @@ export function useMapLayers(tiles: Tile[], size: number, month = 3): MapLayers 
   const pending = cache.pending;
   useEffect(() => {
     if (!pending) return;
-    const id = setTimeout(() => setPass((p) => p + 1), 60);
+    const id = setTimeout(() => setPass((p) => p + 1), 40);
     return () => clearTimeout(id);
   }, [pending, layers]);
   return layers;

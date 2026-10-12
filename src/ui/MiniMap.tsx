@@ -26,11 +26,11 @@ export function MiniMap() {
   const wide = screenW >= 700;
   const W = wide ? 210 : 136;
   const H = W / 2;
-  const tiles = useThrottled(
-    useGameStore((s) => s.tiles),
-    2500,
-  );
+  const live = useGameStore((s) => s.tiles);
   const size = useGameStore((s) => s.gridSize);
+  const throttled = useThrottled(live, 2500);
+  // Juste après un changement de taille, la carte retardée n'a pas encore la bonne taille.
+  const tiles = throttled.length === size * size ? throttled : live;
   const rotation = useGameStore((s) => s.rotation);
   const [rotated] = useState(() => new RotatedTiles());
   const [collapsed, setCollapsed] = useState(false);

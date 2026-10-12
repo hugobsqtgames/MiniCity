@@ -966,7 +966,7 @@ function footprintPts(center: Point, size: number): Point[] {
 const at = (tiles: Tile[], size: number, x: number, y: number) => (x >= 0 && y >= 0 && x < size && y < size ? tiles[y * size + x] : null);
 
 /** Une route peut descendre en rampe vers une route voisine d'un niveau plus bas. */
-const rampable = (t: Tile | null): t is Tile => !!t && isRoadType(t.type) && !t.lake && !isTunnel(t);
+const rampable = (t: Tile | null): t is Tile => !!t && ((isRoadType(t.type) && !t.lake && !isTunnel(t)) || t.type === 'RAIL');
 
 /** Hauteur de chaque sommet du losange : les routes en pente forment des rampes. */
 export function cornerHeights(tiles: Tile[], size: number, tile: Tile) {
@@ -1437,7 +1437,7 @@ export function blockBounds(b: Block, gridSize: number) {
   return {
     x0: o.originX + (b.x0 - b.y1 - 1) * HALF_W - 8,
     x1: o.originX + (b.x1 - b.y0 + 1) * HALF_W + 8,
-    y0: o.originY + (b.x0 + b.y0) * HALF_H - 140,
+    y0: o.originY + (b.x0 + b.y0) * HALF_H - 140 - 3 * LEVEL_H - 30,
     y1: o.originY + (b.x1 + b.y1 + 2) * HALF_H + CLIFF_DEPTH + 30,
   };
 }
@@ -1497,7 +1497,8 @@ const NO_POWER_NEEDED = new Set(['PARK', 'BUSSTOP', 'PARKING', 'RESORT']);
  * derrière et plus bas : il est alors redessiné dans le calque des bâtiments.
  */
 function needsGroundRedraw(tiles: Tile[], size: number, t: Tile): boolean {
-  if (t.type === 'LAKE' || !t.elev) return false;
+  // Pas pour les routes et voies ferrées : les véhicules qui y roulent seraient recouverts.
+  if (t.type === 'LAKE' || !t.elev || isRoadType(t.type) || t.type === 'RAIL') return false;
   for (const [dx, dy] of [
     [-1, 0],
     [0, -1],
@@ -1604,7 +1605,7 @@ export function buildBuildingPicture(tiles: Tile[], gridSize: number, b: Block) 
         top = Math.max(top, prismTop(prism));
       }
       if (t.lake && isRoadType(t.type)) drawSuspension(canvas, tiles, gridSize, t, origin);
-      if (t.line) drawLineFurniture(canvas, t, center);
+      if (t.line && !isTunnel(t)) drawLineFurniture(canvas, t, center);
       const needsPower = isZone(t) || (isFacility(t.type) && !NO_POWER_NEEDED.has(t.type) && !isPlant(t.type));
       if (needsPower && !t.powered) drawNoPower(canvas, center, top);
       else if (isZone(t) && t.density > 0 && !t.water) drawNoWater(canvas, center, top);
@@ -1620,7 +1621,7 @@ export function buildBuildingPicture(tiles: Tile[], gridSize: number, b: Block) 
  * lumières situées derrière sa silhouette, pour qu'aucune fenêtre ne
  * « traverse » un immeuble placé devant.
  */
-export function buildLightsPicture(tiles: Tile[], gridSize: number, b: Block) {
+export function buildLightsPicture(tiles: Tile[], gridSize: number, b: Block): ReturnType<typeof createPicture> {
   const origin = getOrigin(gridSize);
   lookSize = gridSize;
   return createPicture((canvas) => {
@@ -1647,12 +1648,22 @@ export function buildLightsPicture(tiles: Tile[], gridSize: number, b: Block) {
     };
     eachTile(tiles, gridSize, b, (t) => {
       const center = tileCenter(t, origin);
-      if (isRoadType(t.type) && (t.x + t.y) % 2 === 0) {
+      if (isTunnel(t)) return;
+      if (isRoadType(t.type) && (ogx(t) + ogy(t)) % 2 === 0) {
         const p = add(center, { x: -HALF_W * 0.55, y: -2 });
         lamps.addCircle(p.x, p.y - 6, 1.6);
         halos.addCircle(p.x, p.y - 2, 9);
         pending = true;
         return;
+      }
+      // Relief : un sol surélevé masque les fenêtres des bâtiments plus bas situés derrière.
+      if (needsGroundRedraw(tiles, gridSize, t)) {
+        flush();
+        const d = tileDiamond(t.x, t.y, origin);
+        const z = zOf(t);
+        const hill = Skia.PathBuilder.Make();
+        hill.addPoly([up(d.left, z), up(d.top, z), up(d.right, z), d.right, d.bottom, d.left], true);
+        canvas.drawPath(hill.detach(), eraser);
       }
       const prisms = buildingFor(t).filter((pr) => !pr.blob || t.type === 'STADIUM');
       if (!prisms.length) return;
@@ -1681,7 +1692,7 @@ export function buildLightsPicture(tiles: Tile[], gridSize: number, b: Block) {
         for (const [a, bb, path] of faces) {
           for (let f = 0; f < floors; f++) {
             for (let c = 0; c < cols; c++) {
-              if (hash01(t.x * 7 + f, t.y * 13 + c, a === base.left ? 1 : 2) > 0.6) continue;
+              if (hash01(ogx(t) * 7 + f, ogy(t) * 13 + c, a === base.left ? 1 : 2) > 0.6) continue;
               const z0 = f * floorH + floorH * 0.3;
               const p0 = lerp(a, bb, (c + 0.25) / cols);
               const p1 = lerp(a, bb, (c + 0.75) / cols);
@@ -1741,7 +1752,7 @@ export function buildSnowMask(tiles: Tile[], gridSize: number, roads: boolean): 
   const origin = getOrigin(gridSize);
   const p = Skia.PathBuilder.Make();
   for (const t of tiles) {
-    if (t.type === 'LAKE' || (!roads && isRoadType(t.type))) continue;
+    if (t.type === 'LAKE' || (!roads && isRoadType(t.type) && !isTunnel(t))) continue;
     const d = tileDiamond(t.x, t.y, origin, zOf(t));
     p.addPoly([d.top, d.right, d.bottom, d.left], true);
   }

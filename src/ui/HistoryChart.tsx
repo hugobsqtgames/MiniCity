@@ -3,7 +3,7 @@ import { useMemo, useState } from 'react';
 import { StyleSheet, View, type LayoutChangeEvent } from 'react-native';
 
 import { Text } from './Text';
-import { formatNumber, theme } from './theme';
+import { formatMoney, formatNumber, theme } from './theme';
 
 const HEIGHT = 92;
 
@@ -49,7 +49,7 @@ export function HistoryChart({
   }, [data, width, unit]);
 
   const last = data[data.length - 1] ?? 0;
-  const fmt = (v: number) => (money ? `$${formatNumber(v)}` : `${formatNumber(v)}${unit}`);
+  const fmt = (v: number) => (money ? formatMoney(v) : `${formatNumber(v)}${unit}`);
 
   return (
     <View style={styles.card}>

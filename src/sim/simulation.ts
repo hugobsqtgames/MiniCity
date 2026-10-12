@@ -270,7 +270,7 @@ export type SimOutput = {
 
 /** Nombre maximal de bâtiments qui évoluent par mois : la ville pousse progressivement. */
 const MAX_CHANGES_PER_TICK = 60;
-/** Un bâtiment qui brûle plus de 4 mois est détruit. */
+/** Un bâtiment qui brûle depuis 3 mois est détruit au mois suivant. */
 const FIRE_DESTROY_MONTHS = 4;
 const POP_MILESTONES = [500, 1000, 2500, 5000, 10000, 20000, 50000, 100000];
 
@@ -304,7 +304,7 @@ export function computeCoverage(tiles: Tile[], size: number, funding: Funding = 
   const cov = Object.fromEntries([...SERVICE_TYPES, 'TRAM', 'UNI'].map((s) => [s, new Float32Array(size * size)])) as Coverage;
   const stations = connectedStations(tiles, size);
   // Tramway : une ligne d'au moins 4 tuiles dessert ses abords (rayon 3).
-  const tram = tiles.filter((t) => t.type === 'AVENUE' && t.line & LINE_TRAM);
+  const tram = tramLines(tiles, size);
   const transportF = fundingFactor(funding, 'transport');
   const stamp = (map: Float32Array, cx: number, cy: number, radius: number, strength: number) => {
     for (let dy = -radius; dy <= radius; dy++) {
@@ -339,8 +339,30 @@ export function computeCoverage(tiles: Tile[], size: number, funding: Funding = 
     if (strength <= 0) continue;
     stamp(cov[type], t.x, t.y, radius, strength);
   }
-  if (tram.length >= 4 && transportF > 0) for (const t of tram) if (t.flood === 0) stamp(cov.TRAM, t.x, t.y, 3, transportF);
+  if (transportF > 0) for (const t of tram) if (t.flood === 0) stamp(cov.TRAM, t.x, t.y, 3, transportF);
   return cov;
+}
+
+/** Tuiles de tram qui appartiennent à une ligne d'au moins 4 tuiles reliées. */
+function tramLines(tiles: Tile[], size: number): Tile[] {
+  const n = tiles.length;
+  const on = (i: number) => tiles[i].type === 'AVENUE' && (tiles[i].line & LINE_TRAM) !== 0;
+  const seen = new Uint8Array(n);
+  const out: Tile[] = [];
+  for (let i = 0; i < n; i++) {
+    if (seen[i] || !on(i)) continue;
+    const comp = [i];
+    seen[i] = 1;
+    for (let h = 0; h < comp.length; h++) {
+      for (const nb of neighbours4(comp[h], size, n)) {
+        if (nb < 0 || seen[nb] || !on(nb)) continue;
+        seen[nb] = 1;
+        comp.push(nb);
+      }
+    }
+    if (comp.length >= 4) for (const k of comp) out.push(tiles[k]);
+  }
+  return out;
 }
 
 /** Gares reliées à au moins une autre gare par la voie ferrée (indices de tuiles). */
@@ -771,6 +793,7 @@ export function analyzeCity(tiles: Tile[], size: number, policy: Policy = DEFAUL
   let services = 0;
   let built = 0;
   let crimeSum = 0;
+  let crimeN = 0;
   let pollutionR = 0;
   let rTiles = 0;
   let commuteSum = 0;
@@ -783,7 +806,7 @@ export function analyzeCity(tiles: Tile[], size: number, policy: Policy = DEFAUL
 
   for (let i = 0; i < tiles.length; i++) {
     const t = tiles[i];
-    if (t.fire > 0) fires++;
+    if (t.fire > 0 && t.type !== 'FOREST') fires++;
     if (isRoadType(t.type)) roads++;
     else if (isPlant(t.type)) plants++;
     else if (isFacility(t.type)) services++;
@@ -836,6 +859,7 @@ export function analyzeCity(tiles: Tile[], size: number, policy: Policy = DEFAUL
       const c = crimeAt(t, cov.POLICE[i], ordinances);
       crimeMap[i] = c / 100;
       crimeSum += c;
+      crimeN++;
     }
   }
 
@@ -854,7 +878,7 @@ export function analyzeCity(tiles: Tile[], size: number, policy: Policy = DEFAUL
     bus: pct(covSum.bus),
     waste: pct(covSum.waste),
   };
-  const crime = built > 0 ? Math.round(crimeSum / built) : 0;
+  const crime = crimeN > 0 ? Math.round(crimeSum / crimeN) : 0;
   const avgPollution = rTiles > 0 ? pollutionR / rTiles : 0;
   const commute = commuteN > 0 ? commuteSum / commuteN : 0;
   let congSum = 0;
@@ -1120,10 +1144,10 @@ function maxDensity(t: Tile, value: number, population: number, exportOk = true,
 /** Détruit une tuile. Une zone garde son zonage : le quartier se reconstruira tout seul. */
 const destroyTile = (t: Tile): Tile =>
   t.lake
-    ? { ...t, type: 'LAKE', density: 0, fire: 0, garbage: 0, flood: 0 }
+    ? { ...t, type: 'LAKE', density: 0, fire: 0, garbage: 0, flood: 0, line: 0, spec: 0, elev: 0 }
     : isZone(t.type)
-      ? { ...t, density: 0, fire: 0, garbage: 0, value: -1 }
-      : { ...t, type: 'DIRT', density: 0, fire: 0, garbage: 0, flood: 0 };
+      ? { ...t, density: 0, fire: 0, garbage: 0, value: -1, line: 0, spec: 0 }
+      : { ...t, type: 'DIRT', density: 0, fire: 0, garbage: 0, flood: 0, line: 0, spec: 0 };
 const destructible = (t: Tile) => (isZone(t.type) && t.density > 0) || isFacility(t.type) || isRoadType(t.type);
 
 function earthquake(out: Tile[], size: number, random: () => number): DisasterEvent {
@@ -1185,7 +1209,7 @@ function flood(out: Tile[], size: number, random: () => number): DisasterEvent |
     }
     if (wet) {
       out[i] = { ...t, flood: 3 + Math.floor(random() * 3) };
-      damage++;
+      if (destructible(t)) damage++;
     }
   }
   return { kind: 'flood', x: c.x, y: c.y, damage };
@@ -1201,7 +1225,7 @@ function meltdown(out: Tile[], size: number, random: () => number): DisasterEven
     const d = Math.hypot(t.x - c.x, t.y - c.y);
     if (d > 7 || t.type === 'LAKE') continue;
     const rad = Math.max(1, Math.round(9 - d));
-    if (t === c) out[i] = { ...t, type: 'DIRT', density: 0, fire: 0, flood: 0, rad: 9 };
+    if (t === c) out[i] = { ...t, type: 'DIRT', density: 0, fire: 0, flood: 0, rad: 9, line: 0, spec: 0 };
     else out[i] = { ...t, rad: Math.max(t.rad, rad), density: isZone(t.type) ? 0 : t.density, fire: 0 };
     damage++;
   }
@@ -1243,7 +1267,9 @@ function meteor(out: Tile[], size: number, random: () => number): DisasterEvent 
     if (d > 4.5 || t.type === 'LAKE') continue;
     if (d <= 1.6) {
       // Le cratère : un trou de terre brûlée, sans bâtiment ni route.
-      out[i] = { ...t, type: t.lake ? 'LAKE' : 'DIRT', density: 0, fire: 0, garbage: 0, flood: 0, line: 0, spec: 0, elev: 0, value: isZone(t.type) ? -1 : 0 };
+      // (une zone garde son zonage et se reconstruira)
+      out[i] = t.lake || isZone(t.type) ? destroyTile(t) : { ...t, type: 'DIRT', density: 0, fire: 0, garbage: 0, flood: 0, line: 0, spec: 0 };
+      if (d <= 0.8 && out[i].type !== 'LAKE') out[i] = { ...out[i], elev: Math.max(0, out[i].elev - 1) };
       damage++;
     } else if (d <= 2.8 && destructible(t)) {
       out[i] = destroyTile(t);
@@ -1370,17 +1396,19 @@ export function simulateMonth(input: SimInput): SimOutput {
   for (let k = 0; k < n; k++) {
     const idx = (start + k) % n;
     let t = out[idx];
+    // Allumé ce mois-ci par un voisin : le feu ne progresse qu'au mois suivant.
+    if (t.fire > 0 && tiles[idx].fire === 0) continue;
 
     // Contamination : les zones restent vides, la radioactivité baisse d'un cran par an.
     if (t.rad > 0) {
-      if (month % 12 === 0) out[idx] = { ...t, rad: t.rad - 1, density: 0 };
-      else if (t.density > 0) out[idx] = { ...t, density: 0 };
+      if (month % 12 === 0) out[idx] = { ...t, rad: t.rad - 1, density: 0, fire: 0 };
+      else if (t.density > 0 || t.fire > 0) out[idx] = { ...t, density: 0, fire: 0 };
       continue;
     }
 
     // Hors service (inondation, panne) : décompte des mois restants.
     if (t.flood > 0) {
-      t = { ...t, flood: t.flood - 1, density: isZone(t.type) && t.density > 0 && random() < 0.15 ? t.density - 1 : t.density };
+      t = { ...t, fire: 0, flood: t.flood - 1, density: isZone(t.type) && t.density > 0 && random() < 0.15 ? t.density - 1 : t.density };
       out[idx] = t;
       continue;
     }
@@ -1532,7 +1560,9 @@ export function simulateMonth(input: SimInput): SimOutput {
   let epidemic: Epidemic | null = epi ? { ...epi } : null;
   for (const kind of kinds) {
     if (kind === 'epidemic') {
-      epidemic = startEpidemic(before, size, random) ?? epidemic;
+      // Une seule épidémie à la fois (sinon la relancer la « guérirait »).
+      if (epidemic) continue;
+      epidemic = startEpidemic(before, size, random);
       if (epidemic && !epi) {
         const d = districtMap(size).list[epidemic.district];
         events.disasters.push({ kind, x: d.cx, y: d.cy, damage: 0 });

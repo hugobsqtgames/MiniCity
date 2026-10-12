@@ -46,7 +46,12 @@ export function usePersistence() {
         if (wait > 0) await new Promise((r) => setTimeout(r, wait));
         if (cancelled) return;
         useGameStore.getState().hydrateSettings(settings);
-        useGameStore.getState().hydrate(save);
+        try {
+          useGameStore.getState().hydrate(save);
+        } catch {
+          // Sauvegarde inutilisable : on repart d'une ville neuve plutôt que de bloquer sur le splash.
+          useGameStore.getState().hydrate(null);
+        }
         refresh();
       })
       .catch(() => {});
@@ -84,7 +89,11 @@ export function usePersistence() {
       const save = await loadGame(slot).catch(() => null);
       const store = useGameStore.getState();
       store.setSetting('slot', slot);
-      store.hydrate(save);
+      try {
+        store.hydrate(save);
+      } catch {
+        store.hydrate(null);
+      }
       await autoSave();
       refresh();
     },

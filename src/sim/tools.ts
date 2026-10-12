@@ -5,7 +5,7 @@ import { applyPower } from './power';
 export type ToolResult = { ok: true; tiles: Tile[]; cost: number } | { ok: false; reason: string };
 
 /** Contexte de construction : budget et population (pour débloquer les monuments). */
-export type BuildContext = { funds: number; population: number; month?: number };
+export type BuildContext = { funds: number; population: number; month?: number; /** false : pas de recalcul des réseaux (glisser en lot, recalculé à la fin). */ power?: boolean; /** Vérifie seulement (estimation du coût d'un glisser). */ dryRun?: boolean };
 
 /** Surcoût d'un pont (route sur l'eau) et du défrichage d'une forêt. */
 export const BRIDGE_FACTOR = 4;
@@ -51,7 +51,7 @@ export function toolCost(tiles: Tile[], size: number, tool: ToolId, x: number, y
   if (tool === 'tram') return TRAM_COST;
   if (def.places && isRoadType(def.places) && (tile.type === 'LAKE' || tile.lake)) cost *= BRIDGE_FACTOR;
   // Tunnel : une route creusée dans une montagne coûte bien plus cher.
-  if (def.places && (isRoadType(def.places) || def.places === 'RAIL') && tile.elev >= 2) cost *= TUNNEL_FACTOR;
+  if (def.places && isRoadType(def.places) && tile.elev >= 2) cost *= TUNNEL_FACTOR;
   if (tile.type === 'FOREST' && tool !== 'bulldoze') cost += CLEAR_FOREST_COST;
   if (tool === 'water' && nextToLake(tiles, size, x, y)) cost = Math.round(cost / 2);
   if (tool === 'bulldoze' && tile.type === 'FOREST') cost = CLEAR_FOREST_COST;
@@ -60,7 +60,7 @@ export function toolCost(tiles: Tile[], size: number, tool: ToolId, x: number, y
 
 /** Applique un outil sur une tuile. Pure : renvoie une nouvelle carte (ou une raison de refus). */
 export function applyTool(tiles: Tile[], size: number, tool: ToolId, x: number, y: number, ctx: BuildContext | number): ToolResult {
-  const { funds, population, month } = typeof ctx === 'number' ? { funds: ctx, population: Infinity, month: 3 } : ctx;
+  const { funds, population, month, power = true, dryRun = false } = typeof ctx === 'number' ? { funds: ctx, population: Infinity, month: 3, power: true, dryRun: false } : ctx;
   if (x < 0 || y < 0 || x >= size || y >= size) return { ok: false, reason: 'Hors de la carte' };
   const def = TOOL_BY_ID[tool];
   const idx = y * size + x;
@@ -75,6 +75,8 @@ export function applyTool(tiles: Tile[], size: number, tool: ToolId, x: number, 
     if (tile.type === 'FOREST') next = reset(tile, 'GRASS');
     // Un pont rasé rend l'eau ; un bâtiment rasé laisse un terrain vague ; un terrain vague redevient de l'herbe.
     else if (tile.lake) next = reset(tile, 'LAKE');
+    // Une plage aménagée rasée redevient du sable (on pourra la réaménager).
+    else if (tile.type === 'RESORT') next = reset(tile, 'SAND');
     else next = reset(tile, tile.type === 'DIRT' ? 'GRASS' : 'DIRT');
   } else if (tool === 'raise' || tool === 'lower') {
     // Terrassement : uniquement sur un terrain nu ou une parcelle vide.
@@ -83,6 +85,20 @@ export function applyTool(tiles: Tile[], size: number, tool: ToolId, x: number, 
     const elev = tile.elev + (tool === 'raise' ? 1 : -1);
     if (elev < 0) return { ok: false, reason: 'Impossible de creuser plus bas' };
     if (elev > MAX_ELEV) return { ok: false, reason: 'Sommet atteint ⛰️' };
+    // Relief en terrasses : au plus un niveau d'écart avec les cases voisines.
+    for (const [dx, dy] of [
+      [1, 0],
+      [-1, 0],
+      [0, 1],
+      [0, -1],
+    ]) {
+      const nx = x + dx;
+      const ny = y + dy;
+      if (nx < 0 || ny < 0 || nx >= size || ny >= size) continue;
+      const n = tiles[ny * size + nx];
+      const ne = n.type === 'LAKE' ? 0 : n.elev;
+      if (Math.abs(elev - ne) > 1) return { ok: false, reason: 'Pente trop raide ⛰️ — terrassez d’abord les cases voisines' };
+    }
     // Creuser au ras de l'eau, au niveau 0, ne change rien : le niveau 0 est le plancher.
     next = { ...tile, elev };
   } else if (tool === 'tram') {
@@ -98,8 +114,11 @@ export function applyTool(tiles: Tile[], size: number, tool: ToolId, x: number, 
       if (tile.type === 'HIGHWAY') return { ok: false, reason: 'Pas de passage à niveau sur une autoroute 🛣' };
       if (tile.lake) return { ok: false, reason: 'Pas de voie ferrée sur un pont routier 🌉' };
       if (tile.line & LINE_RAIL) return { ok: false, reason: '' };
+      if (tile.flood > 0) return { ok: false, reason: 'Route inondée 🌊 — attendez la décrue' };
+      if (tile.rad > 0) return { ok: false, reason: 'Terrain contaminé ☢️ — attendez la décontamination' };
       const cost = toolCost(tiles, size, tool, x, y);
       if (funds < cost) return { ok: false, reason: 'Fonds insuffisants 💸' };
+      if (dryRun) return { ok: true, tiles, cost };
       const out = tiles.slice();
       out[idx] = { ...tile, line: tile.line | LINE_RAIL };
       return { ok: true, tiles: out, cost };
@@ -124,6 +143,7 @@ export function applyTool(tiles: Tile[], size: number, tool: ToolId, x: number, 
       // Routes : sur terrain libre, en pont sur l'eau, ou en montée en gamme d'une route existante.
       const upgrade = isRoadType(tile.type) && ROAD_RANK[places] > ROAD_RANK[tile.type];
       if (isRoadType(tile.type) && !upgrade) return { ok: false, reason: '' };
+      if (upgrade && places === 'HIGHWAY' && tile.line & LINE_RAIL) return { ok: false, reason: 'Passage à niveau : une autoroute ne peut pas couper la voie ferrée 🚆' };
       if (!upgrade && !isBuildableGround(tile.type) && tile.type !== 'FOREST' && tile.type !== 'LAKE') {
         return { ok: false, reason: 'Terrain occupé — passez le bulldozer 🚜' };
       }
@@ -139,10 +159,11 @@ export function applyTool(tiles: Tile[], size: number, tool: ToolId, x: number, 
 
   const cost = toolCost(tiles, size, tool, x, y);
   if (funds < cost) return { ok: false, reason: 'Fonds insuffisants 💸' };
+  if (dryRun) return { ok: true, tiles, cost };
 
   const out = tiles.slice();
   out[idx] = next;
-  return { ok: true, tiles: applyPower(out, size, month ?? 3), cost };
+  return { ok: true, tiles: power ? applyPower(out, size, month ?? 3) : out, cost };
 }
 
 /**

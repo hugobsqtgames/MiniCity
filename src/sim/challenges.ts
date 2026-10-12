@@ -125,7 +125,7 @@ export const CHALLENGES: Challenge[] = [
   { id: 'bridge', parent: 'roads50', icon: '🌉', title: 'Jeter des ponts', desc: 'Construire 3 ponts.', frame: 'task', reward: 2000, progress: (c) => [c.bridges, 3] },
   { id: 'tram', parent: 'avenue', icon: '🚋', title: 'Tramway', desc: '12 tuiles de tramway.', frame: 'task', reward: 3000, progress: (c) => [c.tram, 12] },
   { id: 'rail', parent: 'roads50', icon: '🚆', title: 'Chemin de fer', desc: 'Relier 2 gares par une voie ferrée.', frame: 'task', reward: 4000, progress: (c) => [Math.max(c.stats.linkedStations, Math.min(1, n(c, 'STATION'))), 2] },
-  { id: 'tunnel', parent: 'rail', icon: '⛰️', title: 'Percée', desc: 'Creuser 3 tunnels sous les montagnes.', frame: 'task', reward: 3000, progress: (c) => [c.tunnels, 3] },
+  { id: 'tunnel', parent: 'rail', icon: '⛰️', title: 'Percée', desc: 'Creuser 3 tuiles de tunnel sous les montagnes.', frame: 'task', reward: 3000, progress: (c) => [c.tunnels, 3] },
   { id: 'parking', parent: 'roads50', icon: '🅿️', title: 'Se garer', desc: 'Construire 3 parkings.', frame: 'task', reward: 1500, progress: has('PARKING', 3) },
   { id: 'bus5', parent: 'roads50', icon: '🚏', title: 'Ligne de bus', desc: '5 arrêts de bus.', frame: 'task', reward: 1500, progress: has('BUSSTOP', 5) },
   { id: 'metro3', parent: 'bus5', icon: '🚇', title: 'Métro', desc: '3 stations de métro.', frame: 'task', reward: 3000, progress: has('METRO', 3) },

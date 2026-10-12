@@ -32,7 +32,8 @@ export function Toast() {
       entering={FadeInUp.springify().damping(16)}
       exiting={FadeOutUp.duration(180)}
       pointerEvents="none"
-      style={[styles.toast, tone, { top: insets.top + HUD_HEIGHT + 16 }]}
+      accessibilityLiveRegion="polite"
+      style={[styles.toast, tone, { top: insets.top + HUD_HEIGHT + 16, maxWidth: '92%' }]}
     >
       <Text style={styles.text}>{visible.text}</Text>
     </Animated.View>

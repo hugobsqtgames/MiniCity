@@ -593,10 +593,11 @@ function groundHeights(tiles: Tile[], size: number): number[] {
       continue;
     }
     let z = t.elev;
-    if (isRoadType(t.type)) {
+    const ramp = (o: Tile) => (isRoadType(o.type) && !o.lake && !isTunnel(o)) || o.type === 'RAIL';
+    if (ramp(t)) {
       for (const n of neighbours4(i, size, tiles.length)) {
         const o = n >= 0 ? tiles[n] : null;
-        if (o && isRoadType(o.type) && !o.lake && !isTunnel(o) && o.elev === t.elev - 1) z = t.elev - 0.5;
+        if (o && ramp(o) && o.elev === t.elev - 1) z = t.elev - 0.5;
       }
     }
     h[i] = z;
@@ -627,6 +628,35 @@ export function heightAt(h: number[] | undefined, size: number, gx: number, gy: 
     if (n > -50 && Math.abs(n - c) <= 0.51) z += (n - c) * Math.abs(fy);
   }
   return z * LEVEL_H;
+}
+
+/**
+ * Hauteurs du sol dans le repère de la vue (rotation), en niveaux : sert à cacher
+ * un véhicule derrière une colline située devant lui.
+ */
+export function viewHeights(h: number[] | undefined, size: number, rot: number): number[] | undefined {
+  if (!h || !rot) return h;
+  const out = new Array<number>(h.length);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const [vx, vy] = pointToView(x + 0.5, y + 0.5, size, rot);
+      out[Math.floor(vy) * size + Math.floor(vx)] = h[y * size + x];
+    }
+  }
+  return out;
+}
+
+/** Vrai si le relief situé devant (vue) cache un objet au sol à la hauteur z (px). Worklet. */
+export function hiddenByRelief(vh: number[] | undefined, size: number, vx: number, vy: number, z: number): boolean {
+  'worklet';
+  if (!vh) return false;
+  const x = Math.floor(vx);
+  const y = Math.floor(vy);
+  const level = z / LEVEL_H;
+  const fx = vx - x;
+  const fy = vy - y;
+  const higher = (nx: number, ny: number) => nx < size && ny < size && vh[ny * size + nx] >= level + 0.9;
+  return (fx > 0.45 && higher(x + 1, y)) || (fy > 0.45 && higher(x, y + 1)) || (fx + fy > 1.2 && higher(x + 1, y + 1));
 }
 
 /** Plus long trajet (approximatif) dans un réseau : BFS depuis un bout, puis depuis l'autre bout. */
@@ -1203,6 +1233,8 @@ export function drawAgents(
   rot = 0,
   mode: 'bodies' | 'lights' = 'bodies',
   night = 0,
+  /** Hauteurs du sol dans le repère de la vue (voir viewHeights). */
+  vh?: number[],
 ) {
   'worklet';
   const { originX, originY } = getOrigin(gridSize);
@@ -1222,6 +1254,7 @@ export function drawAgents(
     // Passage dans le repère de la vue (rotation).
     const [gx, gy] = pointToView(p.gx, p.gy, gridSize, rot);
     const [vdx, vdy] = vectorToView(p.dx, p.dy, rot);
+    if (hiddenByRelief(vh, gridSize, gx, gy, z)) continue;
     const wx = originX + (gx - gy) * HALF_W;
     const wy = originY + (gx + gy) * HALF_H - z;
     if (wx < view.x0 || wx > view.x1 || wy < view.y0 || wy > view.y1) continue;
@@ -1261,7 +1294,7 @@ export function drawAgents(
     return;
   }
 
-  if (scene.lines?.length) drawLineVehicles(canvas, scene, t, gridSize, view, rot);
+  if (scene.lines?.length) drawLineVehicles(canvas, scene, t, gridSize, view, rot, vh);
 
   const nColors = BODY.length;
   const shadows = Skia.PathBuilder.Make();
@@ -1289,15 +1322,19 @@ export function drawAgents(
   const poles = Skia.PathBuilder.Make();
   const lightHeads = Skia.PathBuilder.Make();
   for (const L0 of scene.lights) {
+    const lz = heightAt(scene.heights, gridSize, L0.gx, L0.gy);
+    if (lz < 0) continue;
     const [lgx, lgy] = pointToView(L0.gx, L0.gy, gridSize, rot);
+    if (hiddenByRelief(vh, gridSize, lgx, lgy, lz)) continue;
+    const lY = originY - lz;
     const cx = originX + (lgx - lgy) * HALF_W;
-    const cy = originY + (lgx + lgy) * HALF_H;
+    const cy = lY + (lgx + lgy) * HALF_H;
     if (cx < view.x0 || cx > view.x1 || cy < view.y0 || cy > view.y1) continue;
     for (let axis = 0; axis < 2; axis++) {
       // Poteau au coin du carrefour, côté droit de la voie qui arrive.
       const [ox, oy] = vectorToView(axis === 0 ? -0.46 : 0.46, axis === 0 ? 0.46 : -0.46, rot);
       const px = originX + (lgx + ox - (lgy + oy)) * HALF_W;
-      const py = originY + (lgx + ox + lgy + oy) * HALF_H;
+      const py = lY + (lgx + ox + lgy + oy) * HALF_H;
       poles.addRect({ x: px - 0.6, y: py - 13, width: 1.2, height: 13 });
       lightHeads.addRect({ x: px - 1.9, y: py - 19, width: 3.8, height: 7.5 });
       const state = lightState(t, L0.offset, axis);
@@ -1309,7 +1346,9 @@ export function drawAgents(
   for (const w of scene.waiting ?? []) {
     const [vgx, vgy] = pointToView(w.gx, w.gy, gridSize, rot);
     const wx = originX + (vgx - vgy) * HALF_W;
-    const wy = originY + (vgx + vgy) * HALF_H - Math.max(0, heightAt(scene.heights, gridSize, w.gx, w.gy));
+    const wz = heightAt(scene.heights, gridSize, w.gx, w.gy);
+    if (wz < 0) continue;
+    const wy = originY + (vgx + vgy) * HALF_H - wz;
     if (wx < view.x0 || wx > view.x1 || wy < view.y0 || wy > view.y1) continue;
     shadows.addCircle(wx + 1.5, wy + 0.5, 1.4);
     shirts[w.color].addRect({ x: wx - 1.1, y: wy - 5, width: 2.2, height: 4 });
@@ -1461,7 +1500,7 @@ function alongLoop(v: LineVehicle, d: number) {
 }
 
 /** Trams, trains (rames de plusieurs voitures), voiliers et cargos. Worklet. */
-function drawLineVehicles(canvas: SkCanvas, scene: AgentsScene, t: number, gridSize: number, view: ViewRect, rot: number) {
+function drawLineVehicles(canvas: SkCanvas, scene: AgentsScene, t: number, gridSize: number, view: ViewRect, rot: number, vh?: number[]) {
   'worklet';
   const { originX, originY } = getOrigin(gridSize);
   const top = Skia.PathBuilder.Make();
@@ -1485,6 +1524,7 @@ function drawLineVehicles(canvas: SkCanvas, scene: AgentsScene, t: number, gridS
       const z = v.kind >= LINE_KIND_SAIL ? 0 : heightAt(scene.heights, gridSize, p.gx, p.gy);
       if (z < 0) continue;
       const [gx, gy] = pointToView(p.gx, p.gy, gridSize, rot);
+      if (hiddenByRelief(vh, gridSize, gx, gy, z)) continue;
       const [dx, dy] = vectorToView(p.dx, p.dy, rot);
       const len = Math.hypot(dx, dy) || 1;
       const ux = dx / len;

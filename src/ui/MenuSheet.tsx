@@ -76,6 +76,9 @@ function Btn({
     <Pressable
       onPress={onPress}
       hitSlop={4}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityState={{ selected: !!selected }}
       style={({ pressed }) => [
         styles.btn,
         small && styles.btnSmall,
@@ -108,7 +111,7 @@ function Stepper({ value, min, max, onChange, step, color, suffix }: { value: nu
 }
 
 /** Menu de la ville : statistiques, budget, ordonnances, journal, graphiques et réglages. */
-export function MenuSheet({ onSaveNow, lastSavedAt, slots }: { onSaveNow: () => void; lastSavedAt: number | null; slots: SlotActions }) {
+export function MenuSheet({ onSaveNow, lastSavedAt, slots }: { onSaveNow: () => Promise<void> | void; lastSavedAt: number | null; slots: SlotActions }) {
   const insets = useSafeAreaInsets();
   const { width, height } = useWindowDimensions();
   const wide = width >= WIDE_LAYOUT;
@@ -130,7 +133,7 @@ export function MenuSheet({ onSaveNow, lastSavedAt, slots }: { onSaveNow: () => 
       </View>
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tabs} style={styles.tabsWrap}>
         {TABS.map((t) => (
-          <Pressable key={t.id} onPress={() => setTab(t.id)} style={[styles.tab, tab === t.id && styles.tabOn]}>
+          <Pressable key={t.id} onPress={() => setTab(t.id)} style={[styles.tab, tab === t.id && styles.tabOn]} accessibilityRole="tab" accessibilityState={{ selected: tab === t.id }}>
             <Text style={[styles.tabText, tab === t.id && styles.tabTextOn]}>{t.label}</Text>
           </Pressable>
         ))}
@@ -401,7 +404,7 @@ const QUALITIES: { id: Quality; label: string }[] = [
   { id: 'low', label: 'Basse' },
 ];
 
-function SettingsTab({ onClose, onSaveNow, lastSavedAt, slots }: { onClose: () => void; onSaveNow: () => void; lastSavedAt: number | null; slots: SlotActions }) {
+function SettingsTab({ onClose, onSaveNow, lastSavedAt, slots }: { onClose: () => void; onSaveNow: () => Promise<void> | void; lastSavedAt: number | null; slots: SlotActions }) {
   const settings = useGameStore((s) => s.settings);
   const setSetting = useGameStore((s) => s.setSetting);
   const speed = useGameStore((s) => s.speed);
@@ -455,7 +458,13 @@ function SettingsTab({ onClose, onSaveNow, lastSavedAt, slots }: { onClose: () =
         <SlotCard key={i} slot={i + 1} meta={meta} current={slots.current === i + 1} slots={slots} onClose={onClose} />
       ))}
       <View style={styles.actions}>
-        <Btn label="💾 Sauvegarder" onPress={() => { onSaveNow(); slots.refresh(); }} />
+        <Btn
+          label="💾 Sauvegarder"
+          onPress={async () => {
+            await onSaveNow();
+            slots.refresh();
+          }}
+        />
         <Btn
           label="🏙️ Ville de démo"
           tone="primary"

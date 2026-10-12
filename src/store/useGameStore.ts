@@ -86,7 +86,7 @@ export type CitizenInfo = {
 export type MenuTab = 'advisors' | 'city' | 'districts' | 'budget' | 'laws' | 'events' | 'news' | 'charts' | 'records' | 'settings';
 
 /** Une action à annuler : les tuiles modifiées (avant / après) et son coût. */
-type UndoAction = { cells: { i: number; before: Tile; after: Tile }[]; cost: number };
+type UndoAction = { cells: { i: number; before: Tile; after: Tile; cost: number }[]; cost: number };
 const UNDO_LIMIT = 40;
 
 type GameState = {
@@ -255,16 +255,20 @@ function quickStats(prev: CityStats, tiles: Tile[]): CityStats {
   let jobsI = 0;
   let roads = 0;
   let zones = 0;
+  const specJobs: [number, number, number, number] = [0, 0, 0, 0];
   for (const t of tiles) {
     if (t.type === 'ROAD' || t.type === 'AVENUE' || t.type === 'HIGHWAY') roads++;
     if (!isZone(t.type)) continue;
     zones++;
-    if (t.fire > 0) continue;
+    if (t.fire > 0 || t.density === 0) continue;
     if (t.type === 'R') population += RESIDENTS[t.density];
     else if (t.type === 'C') jobsC += JOBS_C[t.density];
-    else jobsI += JOBS_I[t.density];
+    else {
+      jobsI += JOBS_I[t.density];
+      specJobs[t.spec] += JOBS_I[t.density];
+    }
   }
-  return { ...prev, population, jobsC, jobsI, roads, zones };
+  return { ...prev, population, jobsC, jobsI, roads, zones, specJobs };
 }
 
 const pushCapped = (arr: number[], v: number) => (arr.length >= 240 ? [...arr.slice(1), v] : [...arr, v]);
@@ -292,13 +296,19 @@ export const useGameStore = create<GameState>()((set, get) => {
   };
 
   /** Applique l'outil courant sur une tuile ; renvoie la raison d'un refus éventuel. */
-  const buildAt = (x: number, y: number, recordUndo: boolean, quiet = false): string | null => {
+  /**
+   * Applique l'outil courant sur une tuile. Renvoie null si c'est posé, sinon la
+   * raison du refus ('' = refus silencieux, ex. route déjà présente).
+   * `batch` : glisser en rectangle, réseaux et statistiques recalculés une seule fois à la fin.
+   */
+  const buildAt = (x: number, y: number, recordUndo: boolean, quiet = false, batch = false): string | null => {
     const s = get();
-    const res = applyTool(s.tiles, s.gridSize, s.tool, x, y, { funds: s.treasury, population: s.stats.population, month: s.month });
-    if (!res.ok) return res.reason || null;
+    const res = applyTool(s.tiles, s.gridSize, s.tool, x, y, { funds: s.treasury, population: s.stats.population, month: s.month, power: !batch });
+    if (!res.ok) return res.reason;
     const i = y * s.gridSize + x;
-    const cell = { i, before: s.tiles[i], after: res.tiles[i] };
-    set({ tiles: res.tiles, treasury: s.treasury - res.cost, stats: quickStats(s.stats, res.tiles) });
+    const cell = { i, before: s.tiles[i], after: res.tiles[i], cost: res.cost };
+    if (batch) set({ tiles: res.tiles, treasury: s.treasury - res.cost });
+    else set({ tiles: res.tiles, treasury: s.treasury - res.cost, stats: quickStats(s.stats, res.tiles) });
     if (pending) {
       pending.cells.push(cell);
       pending.cost += res.cost;
@@ -319,19 +329,21 @@ export const useGameStore = create<GameState>()((set, get) => {
     const s = get();
     const tiles = s.tiles.slice();
     let applied = 0;
+    // Remboursement exact : le coût des seules cases effectivement annulées.
+    let refund = 0;
     const cells = direction === 'undo' ? [...action.cells].reverse() : action.cells;
     for (const c of cells) {
       const from = direction === 'undo' ? c.after : c.before;
       const to = direction === 'undo' ? c.before : c.after;
       const cur = tiles[c.i];
-      if (cur.type !== from.type || cur.lake !== from.lake) continue;
+      if (cur.type !== from.type || cur.lake !== from.lake || cur.elev !== from.elev || cur.line !== from.line) continue;
       tiles[c.i] = { ...to, fire: 0, flood: 0, garbage: 0, rad: cur.rad };
       applied++;
+      refund += c.cost ?? 0;
     }
     if (!applied) return 0;
     const next = applyPower(tiles, s.gridSize, s.month);
-    const share = applied / cells.length;
-    const money = Math.round(action.cost * share);
+    const money = Math.round(refund);
     set({ tiles: next, treasury: s.treasury + (direction === 'undo' ? money : -money), stats: quickStats(s.stats, next) });
     return applied;
   };
@@ -364,7 +376,8 @@ export const useGameStore = create<GameState>()((set, get) => {
         return;
       }
       const reason = buildAt(x, y, true);
-      if (reason) {
+      if (reason !== null) {
+        if (!reason) return;
         get().showToast(reason);
         playSfx('error');
         haptic('warn');
@@ -419,17 +432,22 @@ export const useGameStore = create<GameState>()((set, get) => {
           const t = get().tiles[y * s.gridSize + x];
           // Zonage : on saute en silence ce qui n'est pas constructible (routes, bâtiments…).
           if (s.tool !== 'bulldoze' && isZone(TOOL_BY_ID[s.tool].places ?? 'GRASS') && !isBuildableGround(t.type) && t.type !== 'FOREST') continue;
-          const reason = buildAt(x, y, false, true);
-          if (!reason) placed++;
+          const reason = buildAt(x, y, false, true, true);
+          if (reason === null) placed++;
           else if (reason.startsWith('Fonds')) {
             broke = true;
             break;
-          } else firstReason ??= reason;
+          } else if (reason) firstReason ??= reason;
         }
         const action = pending;
         pending = null;
         pushUndo(action);
         if (placed > 0) {
+          // Réseaux et statistiques recalculés une seule fois pour tout le rectangle.
+          const st = get();
+          const powered = applyPower(st.tiles, st.gridSize, st.month);
+          set({ tiles: powered, stats: quickStats(st.stats, powered) });
+          for (const c of action.cells) c.after = powered[c.i];
           haptic('select');
           playSfx(s.tool === 'bulldoze' ? 'bulldoze' : 'build');
         }
@@ -681,14 +699,20 @@ export const useGameStore = create<GameState>()((set, get) => {
     closeConfirm: () => set({ confirm: null }),
     setCityName: (name) => set({ cityName: name.slice(0, 24) || 'Ma ville' }),
 
-    newCity: (size = GRID_SIZE) =>
-      set({ ...freshCity(createTerrainMap(size), size, START_FUNDS), paused: false, rotation: 0, dataView: 'none', disasters: get().disasters, funDisasters: get().funDisasters }),
-    loadDemoCity: () => set({ ...freshCity(createDemoMap(50), 50, 50000, 'Démoville', true), paused: false, rotation: 0, dataView: 'none' }),
+    newCity: (size = GRID_SIZE) => {
+      pending = null;
+      set({ ...freshCity(createTerrainMap(size), size, START_FUNDS), paused: false, rotation: 0, dataView: 'none', disasters: get().disasters, funDisasters: get().funDisasters, toast: null, confirm: null, timelapseOpen: false });
+    },
+    loadDemoCity: () => {
+      pending = null;
+      set({ ...freshCity(createDemoMap(50), 50, 50000, 'Démoville', true), paused: false, rotation: 0, dataView: 'none', toast: null, confirm: null, timelapseOpen: false });
+    },
 
     hydrate: (save) => {
+      pending = null;
       if (!save) {
-        // Première partie : une carte naturelle neuve.
-        set({ ...freshCity(createTerrainMap(GRID_SIZE), GRID_SIZE, START_FUNDS), hydrated: true });
+        // Première partie (ou emplacement vide) : une carte naturelle neuve, réglages de partie remis à zéro.
+        set({ ...freshCity(createTerrainMap(GRID_SIZE), GRID_SIZE, START_FUNDS), hydrated: true, rotation: 0, dataView: 'none', disasters: false, funDisasters: false, toast: null, confirm: null, timelapseOpen: false });
         return;
       }
       const tiles = applyPower(save.tiles, save.gridSize, save.month);
@@ -713,6 +737,15 @@ export const useGameStore = create<GameState>()((set, get) => {
         records: save.records,
         timelapse: save.timelapse.length ? save.timelapse : [makeFrame(tiles, save.gridSize, save.month, a.stats.population)],
         timelapseOpen: false,
+        // Rien de la ville précédente ne doit fuir dans celle-ci.
+        pendingDisaster: null,
+        lastDisaster: null,
+        lastIncome: 0,
+        lastExpenses: 0,
+        stroke: null,
+        toast: null,
+        confirm: null,
+        dataView: 'none',
         demand: save.demand,
         speed: save.speed,
         history: save.history,

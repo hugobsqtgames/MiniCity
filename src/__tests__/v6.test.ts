@@ -28,17 +28,24 @@ function run(tiles: Tile[], months: number, extra: Partial<Parameters<typeof sim
 }
 
 describe('relief et terrassement', () => {
-  it('monter et creuser coûtent 25 $ et restent entre 0 et le niveau max', () => {
+  it('monter et creuser coûtent 25 $, en terrasses, entre 0 et le niveau max', () => {
     let tiles = createEmptyMap(SIZE);
-    for (let k = 0; k < MAX_ELEV; k++) {
-      const r = applyTool(tiles, SIZE, 'raise', 3, 3, rich);
-      expect(r.ok).toBe(true);
-      if (!r.ok) return;
-      expect(r.cost).toBe(TERRAFORM_COST);
-      tiles = r.tiles;
-    }
-    expect(at(tiles, 3, 3).elev).toBe(MAX_ELEV);
+    const r = applyTool(tiles, SIZE, 'raise', 3, 3, rich);
+    expect(r.ok && r.cost).toBe(TERRAFORM_COST);
+    if (!r.ok) return;
+    tiles = r.tiles;
+    // Pas plus d'un niveau d'écart avec les voisines.
     expect(applyTool(tiles, SIZE, 'raise', 3, 3, rich).ok).toBe(false);
+    for (const [x, y] of [
+      [2, 3],
+      [4, 3],
+      [3, 2],
+      [3, 4],
+    ])
+      at(tiles, x, y).elev = MAX_ELEV - 1;
+    at(tiles, 3, 3).elev = MAX_ELEV;
+    expect(applyTool(tiles, SIZE, 'raise', 3, 3, rich).ok).toBe(false);
+    expect(applyTool(tiles, SIZE, 'lower', 3, 3, rich).ok).toBe(true);
     expect(applyTool(createEmptyMap(SIZE), SIZE, 'lower', 3, 3, rich).ok).toBe(false);
   });
 
@@ -116,8 +123,8 @@ describe('tramway et trains', () => {
     const av = applyTool(r.tiles, SIZE, 'avenue', 2, 2, rich);
     expect(av.ok && av.tiles[2 * SIZE + 2].line & LINE_RAIL).toBeTruthy();
     if (!av.ok) return;
-    const hw = applyTool(av.tiles, SIZE, 'highway', 2, 2, rich);
-    expect(hw.ok && hw.tiles[2 * SIZE + 2].line).toBe(0);
+    // Une autoroute ne peut pas couper la voie ferrée.
+    expect(applyTool(av.tiles, SIZE, 'highway', 2, 2, rich).ok).toBe(false);
   });
 
   it('une gare ne dessert que si elle est reliée à une autre gare', () => {

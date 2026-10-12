@@ -53,16 +53,26 @@ function ToolButton({ tool, active, locked, onPress }: { tool: ToolDef; active: 
   );
 }
 
+/** Tous les seuils de déblocage, triés : la population n'est suivie que par paliers. */
+const UNLOCK_STEPS = [
+  ...new Set([0, ...Object.values(MONUMENT_UNLOCK), ...Object.values(VENUE_UNLOCK), NUCLEAR_UNLOCK, ...Object.values(UNLOCK).map((v) => v ?? 0)]),
+].sort((a, b) => a - b);
+
 export function Toolbar() {
   const insets = useSafeAreaInsets();
   const tool = useGameStore((s) => s.tool);
   const setTool = useGameStore((s) => s.setTool);
   const showToast = useGameStore((s) => s.showToast);
-  const population = useGameStore((s) => s.stats.population);
-  const tiles = useGameStore((s) => s.tiles);
+  // Sélecteurs primitifs : la barre ne se redessine que si un seuil ou un monument change.
+  const population = useGameStore((s) => UNLOCK_STEPS.filter((n) => s.stats.population >= n).pop() ?? 0);
+  const builtKey = useGameStore((s) => {
+    let k = '';
+    for (const t of s.tiles) if (isMonument(t.type)) k += t.type + ',';
+    return k;
+  });
   const { width } = useWindowDimensions();
   // Monuments : verrouillés sous un seuil de population, un seul exemplaire chacun.
-  const built = new Set(tiles.filter((t) => isMonument(t.type)).map((t) => t.type));
+  const built = new Set(builtKey.split(',').filter(Boolean));
   const needOf = (t: ToolDef): number => {
     if (!t.places) return 0;
     if (isMonument(t.places)) return MONUMENT_UNLOCK[t.places];

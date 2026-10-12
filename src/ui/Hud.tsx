@@ -88,13 +88,13 @@ export function Hud({ onOpenMenu }: { onOpenMenu: () => void }) {
             </Text>
           </View>
           <View style={styles.row}>
-            <Pressable onPress={togglePause} style={styles.chip} hitSlop={6}>
+            <Pressable onPress={togglePause} style={styles.chip} hitSlop={6} accessibilityRole="button" accessibilityLabel={paused ? 'Reprendre' : 'Pause'}>
               <Text maxScale={1.1} style={styles.chipText}>{paused ? '▶︎' : '❚❚'}</Text>
             </Pressable>
-            <Pressable onPress={cycleSpeed} style={[styles.chip, paused && styles.chipDim]} hitSlop={6}>
+            <Pressable onPress={cycleSpeed} style={[styles.chip, paused && styles.chipDim]} hitSlop={6} accessibilityRole="button" accessibilityLabel="Changer la vitesse">
               <Text maxScale={1.1} style={styles.chipText}>{'▸'.repeat(speed)} {speed}×</Text>
             </Pressable>
-            <Pressable onPress={onOpenMenu} style={styles.chip} hitSlop={6}>
+            <Pressable onPress={onOpenMenu} style={styles.chip} hitSlop={6} accessibilityRole="button" accessibilityLabel="Ouvrir le menu">
               <Text maxScale={1.1} style={styles.chipText}>⚙︎ Menu</Text>
             </Pressable>
             {cityEvents.length > 0 && (

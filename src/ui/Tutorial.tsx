@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { Pressable, StyleSheet, useWindowDimensions, View } from 'react-native';
 import Animated, { FadeInUp, FadeOutUp } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -69,12 +70,16 @@ export function Tutorial() {
   const tool = useGameStore((s) => s.tool);
   const setTool = useGameStore((s) => s.setTool);
   const setSetting = useGameStore((s) => s.setSetting);
-  if (progress < 0) return null;
 
   // Étape courante : la première non validée (on peut prendre de l'avance).
   const counts = countTypes(tiles);
-  let index = TUTORIAL_STEPS.findIndex((s, i) => i >= progress && !s.done(counts, pop, speed));
-  if (index < 0) index = TUTORIAL_STEPS.length;
+  let index = progress < 0 ? -1 : TUTORIAL_STEPS.findIndex((s, i) => i >= progress && !s.done(counts, pop, speed));
+  if (index < 0 && progress >= 0) index = TUTORIAL_STEPS.length;
+  // La progression est enregistrée : raser une route ne fait pas revenir en arrière.
+  useEffect(() => {
+    if (progress >= 0 && index > progress && index < TUTORIAL_STEPS.length) setSetting('tutorial', index);
+  }, [index, progress, setSetting]);
+  if (progress < 0) return null;
   const step = TUTORIAL_STEPS[index];
   const wide = width >= 700;
 
@@ -84,7 +89,9 @@ export function Tutorial() {
       exiting={FadeOutUp.duration(150)}
       style={[
         styles.wrap,
-        wide ? { top: insets.top + 6, left: 560, right: 76 } : { top: insets.top + HUD_HEIGHT + 12 },
+        wide
+          ? { top: insets.top + HUD_HEIGHT + 12, left: insets.left + theme.gutter, right: undefined, width: Math.min(540, width - insets.left - insets.right - 2 * theme.gutter - 58) }
+          : { top: insets.top + HUD_HEIGHT + 12 },
       ]}
     >
       <Glass intensity={45} style={styles.card}>
@@ -97,7 +104,7 @@ export function Tutorial() {
               <View key={i} style={[styles.dot, i < index && styles.dotDone, i === index && styles.dotNow]} />
             ))}
           </View>
-          <Pressable onPress={() => setSetting('tutorial', -1)} hitSlop={10}>
+          <Pressable onPress={() => setSetting('tutorial', -1)} hitSlop={10} accessibilityRole="button" accessibilityLabel="Passer le tutoriel">
             <Text style={styles.skip}>{step ? 'Passer' : 'Fermer'}</Text>
           </Pressable>
         </View>

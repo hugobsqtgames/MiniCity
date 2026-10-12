@@ -38,6 +38,11 @@ export function usePerformanceGovernor(quality: Quality) {
   const meter = useFrameCallback((info) => {
     'worklet';
     const now = info.timestamp;
+    // Retour de l'arrière-plan (longue pause entre deux images) : on repart d'une fenêtre neuve.
+    if (info.timeSincePreviousFrame !== null && info.timeSincePreviousFrame > 250) {
+      windowStart.set(0);
+      return;
+    }
     if (windowStart.get() === 0) {
       windowStart.set(now);
       frames.set(0);
