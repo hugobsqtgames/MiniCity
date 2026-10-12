@@ -244,8 +244,27 @@ export function createDemoMap(size: number): Tile[] {
 
   // Lycée, parkings du centre-ville, station d'épuration au bord de la rivière.
   set(31, 16, 'HIGHSCHOOL');
-  set(22, 25, 'PARKING');
-  set(26, 22, 'PARKING');
+  for (const [x, y] of [
+    [22, 25],
+    [26, 22],
+    [20, 23],
+    [24, 27],
+    [27, 25],
+    [31, 14],
+    [35, 14],
+    [33, 18],
+  ])
+    set(x, y, 'PARKING');
+  // Écoles supplémentaires et second lycée : une population instruite.
+  for (const [x, y, type] of [
+    [23, 15, 'SCHOOL'],
+    [34, 27, 'SCHOOL'],
+    [14, 21, 'SCHOOL'],
+    [22, 22, 'SCHOOL'],
+    [13, 26, 'HIGHSCHOOL'],
+    [32, 32, 'HIGHSCHOOL'],
+  ] as [number, number, TileType][])
+    set(x, y, type);
   set(14, 40, 'TREATMENT');
   set(15, 40, 'ROAD');
   for (let y = 37; y <= 40; y++) set(16, y, 'ROAD');

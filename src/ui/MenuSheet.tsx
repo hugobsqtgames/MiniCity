@@ -209,14 +209,14 @@ function CityTab() {
         <Stat label="Bouchons" value={`${st.congestion} %`} color={st.congestion > 60 ? theme.negative : undefined} />
         <Stat label="Bus + métro" value={formatNumber(st.busRiders + st.metroRiders)} />
         <Stat label="Tram + train" value={formatNumber(st.tramRiders + st.trainRiders)} />
-        <Stat label="Parkings" value={st.parkingShortage ? `${st.parkingShortage} manquent` : 'OK'} color={st.parkingShortage ? theme.negative : undefined} />
+        <Stat label="Commerces sans parking" value={st.parkingShortage ? String(st.parkingShortage) : '0'} color={st.parkingShortage ? theme.negative : undefined} />
       </View>
 
       <Text style={styles.section}>Éducation, santé, tourisme</Text>
       <View style={styles.statsGrid}>
         <Stat label="Niveau d’études" value={`${st.educationLevel} %`} color={st.educationLevel < 35 ? theme.negative : st.educationLevel >= 70 ? theme.positive : undefined} />
         <Stat label="Épidémie" value={st.epidemic ? `${st.epidemic} %` : 'aucune'} color={st.epidemic ? theme.negative : theme.positive} />
-        <Stat label="Eau des lacs" value={`${st.waterPollution} % polluée`} color={st.waterPollution > 30 ? theme.negative : undefined} />
+        <Stat label="Lacs pollués" value={`${st.waterPollution} %`} color={st.waterPollution > 30 ? theme.negative : undefined} />
         <Stat label="Touristes" value={formatNumber(st.tourists)} />
         <Stat label="À l’hôtel" value={st.tourists ? `${Math.round((st.hotelGuests / st.tourists) * 100)} %` : '—'} color={st.tourists && st.hotelGuests < st.tourists * 0.5 ? theme.negative : undefined} />
       </View>
