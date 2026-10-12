@@ -214,11 +214,21 @@ export function setAmbienceEnabled(on: boolean): void {
   applyAmbience();
 }
 
-/** Change d'ambiance (null = silence) avec un fondu enchaîné d'environ 1,2 s. */
+let ambienceDebounce: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Change d'ambiance (null = silence) avec un fondu enchaîné d'environ 1,2 s.
+ * Le changement attend une demi-seconde de stabilité : des bascules rapides
+ * (chargement, pause / reprise) ne lancent pas une lecture aussitôt interrompue.
+ */
 export function setAmbience(name: Ambience | null): void {
-  if (name === currentAmbience) return;
-  currentAmbience = name;
-  applyAmbience();
+  if (ambienceDebounce) clearTimeout(ambienceDebounce);
+  ambienceDebounce = setTimeout(() => {
+    ambienceDebounce = null;
+    if (name === currentAmbience) return;
+    currentAmbience = name;
+    applyAmbience();
+  }, 500);
 }
 
 /** Met les ambiances en pause quand l'app passe en arrière-plan, et les relance au retour. */

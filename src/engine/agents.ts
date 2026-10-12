@@ -1218,6 +1218,96 @@ function drawBubble(canvas: SkCanvas, x: number, y: number, kind: number) {
   }
 }
 
+/** Position sur une boucle (coordonnées d'origine) à la distance d. Worklet. */
+function alongLoop(v: LineVehicle, d: number) {
+  'worklet';
+  const dd = mod(d, v.total);
+  let i = 0;
+  while (i < v.cum.length - 2 && v.cum[i + 1] < dd) i++;
+  const seg = v.cum[i + 1] - v.cum[i] || 1;
+  const f = (dd - v.cum[i]) / seg;
+  const dx = v.gx[i + 1] - v.gx[i];
+  const dy = v.gy[i + 1] - v.gy[i];
+  return { gx: v.gx[i] + dx * f, gy: v.gy[i] + dy * f, dx, dy };
+}
+
+/** Trams, trains (rames de plusieurs voitures), voiliers et cargos. Worklet. */
+function drawLineVehicles(canvas: SkCanvas, scene: AgentsScene, t: number, gridSize: number, view: ViewRect, rot: number, vh?: number[]) {
+  'worklet';
+  const { originX, originY } = getOrigin(gridSize);
+  const top = Skia.PathBuilder.Make();
+  const left = Skia.PathBuilder.Make();
+  const right = Skia.PathBuilder.Make();
+  const topB = Skia.PathBuilder.Make();
+  const leftB = Skia.PathBuilder.Make();
+  const rightB = Skia.PathBuilder.Make();
+  const glassL = Skia.PathBuilder.Make();
+  const glassR = Skia.PathBuilder.Make();
+  const sails = Skia.PathBuilder.Make();
+  const wakes = Skia.PathBuilder.Make();
+  const shadow = Skia.PathBuilder.Make();
+  const scrap = Skia.PathBuilder.Make();
+  const lines = scene.lines ?? [];
+  // Couleurs par type : tram vert et blanc, train rouge et gris, coques blanches ou rouges.
+  for (const v of lines) {
+    const head = t * v.speed + v.phase;
+    for (let car = 0; car < v.cars; car++) {
+      const p = alongLoop(v, head - car * 0.62);
+      const z = v.kind >= LINE_KIND_SAIL ? 0 : heightAt(scene.heights, gridSize, p.gx, p.gy);
+      if (z < 0) continue;
+      const [gx, gy] = pointToView(p.gx, p.gy, gridSize, rot);
+      if (hiddenByRelief(vh, gridSize, gx, gy, z)) continue;
+      const [dx, dy] = vectorToView(p.dx, p.dy, rot);
+      const len = Math.hypot(dx, dy) || 1;
+      const ux = dx / len;
+      const uy = dy / len;
+      const oY = originY - z;
+      const wx = originX + (gx - gy) * HALF_W;
+      const wy = oY + (gx + gy) * HALF_H;
+      if (wx < view.x0 - 30 || wx > view.x1 + 30 || wy < view.y0 - 30 || wy > view.y1 + 30) continue;
+      if (v.kind === LINE_KIND_TRAM || v.kind === LINE_KIND_TRAIN) {
+        const loco = v.kind === LINE_KIND_TRAIN && car === 0;
+        const L = 0.29;
+        const W = v.kind === LINE_KIND_TRAM ? 0.11 : 0.12;
+        const sx = originX + (gx - gy) * HALF_W + 3;
+        const sy = oY + (gx + gy) * HALF_H + 1.5;
+        shadow.addCircle(sx, sy, 4);
+        if (loco) addBox(topB, leftB, rightB, gx, gy, 1, 9, ux, uy, -L, L, W, originX, oY);
+        else addBox(top, left, right, gx, gy, 1, 8.5, ux, uy, -L, L, W, originX, oY);
+        addBox(scrap, glassL, glassR, gx, gy, 4.5, 7, ux, uy, -L * 0.9, L * 0.9, W * 1.01, originX, oY);
+      } else {
+        // Bateau : coque effilée, sillage, voile triangulaire ou conteneurs.
+        const ship = v.kind === LINE_KIND_SHIP;
+        const L = ship ? 0.42 : 0.2;
+        const W = ship ? 0.13 : 0.07;
+        const back = { x: originX + (gx - ux * L * 2 - (gy - uy * L * 2)) * HALF_W, y: oY + (gx - ux * L * 2 + gy - uy * L * 2) * HALF_H };
+        wakes.addCircle(back.x, back.y, ship ? 3.5 : 2);
+        addBox(ship ? topB : top, ship ? leftB : left, ship ? rightB : right, gx, gy, 0, ship ? 4 : 2.5, ux, uy, -L, L, W, originX, oY);
+        if (ship) {
+          addBox(top, left, right, gx, gy, 4, 8, ux, uy, -L * 0.7, L * 0.4, W * 0.8, originX, oY);
+        } else {
+          const m = { x: wx, y: wy - 2.5 };
+          const sway = Math.sin(t * 1.3 + v.phase) * 1.5;
+          sails.addPoly([m, { x: m.x + sway, y: m.y - 14 }, { x: m.x + 7 + sway * 0.5, y: m.y - 1 }], true);
+        }
+      }
+    }
+  }
+  canvas.drawPath(wakes.detach(), makePaint('#ecf0f1', 0.55));
+  canvas.drawPath(shadow.detach(), makePaint('#000000', 0.2));
+  // Les rames et les coques : couleurs fixes (le tram est vert, le train rouge).
+  canvas.drawPath(left.detach(), makePaint('#d5d8dc'));
+  canvas.drawPath(right.detach(), makePaint('#a6acaf'));
+  canvas.drawPath(top.detach(), makePaint('#f8f9f9'));
+  canvas.drawPath(leftB.detach(), makePaint('#c0392b'));
+  canvas.drawPath(rightB.detach(), makePaint('#922b21'));
+  canvas.drawPath(topB.detach(), makePaint('#e74c3c'));
+  canvas.drawPath(glassL.detach(), makePaint('#27ae60'));
+  canvas.drawPath(glassR.detach(), makePaint('#1e8449'));
+  canvas.drawPath(sails.detach(), makePaint('#fdfefe'));
+  scrap.detach();
+}
+
 /**
  * Dessine les agents visibles à l'instant `timeMs`. Worklet : s'exécute sur le
  * thread UI. Les agents hors de `view` sont ignorés (culling).
@@ -1484,96 +1574,6 @@ export function drawAgents(
   }
   canvas.drawPath(heads.detach(), makePaint('#f5cba7'));
   for (const b of bubbles) drawBubble(canvas, b.x, b.y, b.kind);
-}
-
-/** Position sur une boucle (coordonnées d'origine) à la distance d. Worklet. */
-function alongLoop(v: LineVehicle, d: number) {
-  'worklet';
-  const dd = mod(d, v.total);
-  let i = 0;
-  while (i < v.cum.length - 2 && v.cum[i + 1] < dd) i++;
-  const seg = v.cum[i + 1] - v.cum[i] || 1;
-  const f = (dd - v.cum[i]) / seg;
-  const dx = v.gx[i + 1] - v.gx[i];
-  const dy = v.gy[i + 1] - v.gy[i];
-  return { gx: v.gx[i] + dx * f, gy: v.gy[i] + dy * f, dx, dy };
-}
-
-/** Trams, trains (rames de plusieurs voitures), voiliers et cargos. Worklet. */
-function drawLineVehicles(canvas: SkCanvas, scene: AgentsScene, t: number, gridSize: number, view: ViewRect, rot: number, vh?: number[]) {
-  'worklet';
-  const { originX, originY } = getOrigin(gridSize);
-  const top = Skia.PathBuilder.Make();
-  const left = Skia.PathBuilder.Make();
-  const right = Skia.PathBuilder.Make();
-  const topB = Skia.PathBuilder.Make();
-  const leftB = Skia.PathBuilder.Make();
-  const rightB = Skia.PathBuilder.Make();
-  const glassL = Skia.PathBuilder.Make();
-  const glassR = Skia.PathBuilder.Make();
-  const sails = Skia.PathBuilder.Make();
-  const wakes = Skia.PathBuilder.Make();
-  const shadow = Skia.PathBuilder.Make();
-  const scrap = Skia.PathBuilder.Make();
-  const lines = scene.lines ?? [];
-  // Couleurs par type : tram vert et blanc, train rouge et gris, coques blanches ou rouges.
-  for (const v of lines) {
-    const head = t * v.speed + v.phase;
-    for (let car = 0; car < v.cars; car++) {
-      const p = alongLoop(v, head - car * 0.62);
-      const z = v.kind >= LINE_KIND_SAIL ? 0 : heightAt(scene.heights, gridSize, p.gx, p.gy);
-      if (z < 0) continue;
-      const [gx, gy] = pointToView(p.gx, p.gy, gridSize, rot);
-      if (hiddenByRelief(vh, gridSize, gx, gy, z)) continue;
-      const [dx, dy] = vectorToView(p.dx, p.dy, rot);
-      const len = Math.hypot(dx, dy) || 1;
-      const ux = dx / len;
-      const uy = dy / len;
-      const oY = originY - z;
-      const wx = originX + (gx - gy) * HALF_W;
-      const wy = oY + (gx + gy) * HALF_H;
-      if (wx < view.x0 - 30 || wx > view.x1 + 30 || wy < view.y0 - 30 || wy > view.y1 + 30) continue;
-      if (v.kind === LINE_KIND_TRAM || v.kind === LINE_KIND_TRAIN) {
-        const loco = v.kind === LINE_KIND_TRAIN && car === 0;
-        const L = 0.29;
-        const W = v.kind === LINE_KIND_TRAM ? 0.11 : 0.12;
-        const sx = originX + (gx - gy) * HALF_W + 3;
-        const sy = oY + (gx + gy) * HALF_H + 1.5;
-        shadow.addCircle(sx, sy, 4);
-        if (loco) addBox(topB, leftB, rightB, gx, gy, 1, 9, ux, uy, -L, L, W, originX, oY);
-        else addBox(top, left, right, gx, gy, 1, 8.5, ux, uy, -L, L, W, originX, oY);
-        addBox(scrap, glassL, glassR, gx, gy, 4.5, 7, ux, uy, -L * 0.9, L * 0.9, W * 1.01, originX, oY);
-      } else {
-        // Bateau : coque effilée, sillage, voile triangulaire ou conteneurs.
-        const ship = v.kind === LINE_KIND_SHIP;
-        const L = ship ? 0.42 : 0.2;
-        const W = ship ? 0.13 : 0.07;
-        const back = { x: originX + (gx - ux * L * 2 - (gy - uy * L * 2)) * HALF_W, y: oY + (gx - ux * L * 2 + gy - uy * L * 2) * HALF_H };
-        wakes.addCircle(back.x, back.y, ship ? 3.5 : 2);
-        addBox(ship ? topB : top, ship ? leftB : left, ship ? rightB : right, gx, gy, 0, ship ? 4 : 2.5, ux, uy, -L, L, W, originX, oY);
-        if (ship) {
-          addBox(top, left, right, gx, gy, 4, 8, ux, uy, -L * 0.7, L * 0.4, W * 0.8, originX, oY);
-        } else {
-          const m = { x: wx, y: wy - 2.5 };
-          const sway = Math.sin(t * 1.3 + v.phase) * 1.5;
-          sails.addPoly([m, { x: m.x + sway, y: m.y - 14 }, { x: m.x + 7 + sway * 0.5, y: m.y - 1 }], true);
-        }
-      }
-    }
-  }
-  canvas.drawPath(wakes.detach(), makePaint('#ecf0f1', 0.55));
-  canvas.drawPath(shadow.detach(), makePaint('#000000', 0.2));
-  // Les rames et les coques : couleurs fixes (le tram est vert, le train rouge).
-  canvas.drawPath(left.detach(), makePaint('#d5d8dc'));
-  canvas.drawPath(right.detach(), makePaint('#a6acaf'));
-  canvas.drawPath(top.detach(), makePaint('#f8f9f9'));
-  canvas.drawPath(leftB.detach(), makePaint('#c0392b'));
-  canvas.drawPath(rightB.detach(), makePaint('#922b21'));
-  canvas.drawPath(topB.detach(), makePaint('#e74c3c'));
-  canvas.drawPath(glassL.detach(), makePaint('#27ae60'));
-  canvas.drawPath(glassR.detach(), makePaint('#1e8449'));
-  canvas.drawPath(sails.detach(), makePaint('#fdfefe'));
-  scrap.detach();
 }
 
 /**

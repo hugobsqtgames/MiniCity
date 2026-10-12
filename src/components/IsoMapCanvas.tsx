@@ -192,6 +192,15 @@ function AgentsLayer({
 type Spinner = { kind: 'wind' | 'wheel'; x: number; y: number; seed: number; occ: SkPicture };
 type Burst = { x: number; y: number; big: boolean };
 
+function hazePaint(alpha: number, color: string) {
+  'worklet';
+  const p = Skia.Paint();
+  p.setAntiAlias(true);
+  p.setColor(Skia.Color(color));
+  p.setAlphaf(alpha);
+  return p;
+}
+
 /** Catastrophe animée : trajet (tornade, monstre) ou point d'impact (météorite). */
 type DisasterAnim = { kind: 'tornado' | 'monster' | 'meteor'; path: { x: number; y: number }[]; start: SharedValue<number> };
 /** Piste d'aéroport : départ et direction de décollage (px écran par tuile). */
@@ -413,14 +422,6 @@ function EffectsLayer({
   );
 }
 
-function hazePaint(alpha: number, color: string) {
-  'worklet';
-  const p = Skia.Paint();
-  p.setAntiAlias(true);
-  p.setColor(Skia.Color(color));
-  p.setAlphaf(alpha);
-  return p;
-}
 
 /**
  * Carte isométrique interactive.

@@ -78,14 +78,49 @@ Un **tutoriel** guide les premiers pas (rue → maisons → centrale → eau →
 22. **Mini-carte**, **zonage en rectangle** et **routes droites** (aperçu et coût pendant le glisser),
     **3 emplacements de sauvegarde** avec aperçu, **accessibilité** (taille du texte, palette daltonienne, vibrations).
 
+### Nouveautés de la v6
+
+23. **Relief** : collines et montagnes (4 niveaux), falaises, outils « Monter » / « Creuser » (terrassement en
+    terrasses), routes en rampe, **tunnels** sous les montagnes, **ponts suspendus** (pylônes et câbles) au-delà de
+    4 tuiles. Les hauteurs ont une meilleure vue (+ valeur) et restent au sec pendant les inondations.
+24. **Tramway** sur les avenues (rames animées, caténaires) et **trains de voyageurs** : voies ferrées, gares
+    (au moins deux reliées), passages à niveau avec barrières.
+25. **Avions** qui décollent de l'aéroport, **voiliers** sur les lacs, **cargos** au départ du port.
+26. **Parkings** : indispensables aux tours de bureaux au-delà de 2 500 habitants.
+27. **Niveau d'éducation** : école 40 %, lycée 35 %, université 25 % ; sans diplômés, pas de bureaux ni de
+    haute technologie.
+28. **Industries spécialisées** : fermes à la campagne, scieries près des forêts, campus de haute technologie
+    quand la population est instruite (moins polluants, visuels propres).
+29. **Tourisme** : plages aménagées, hôtels (sans chambre, les touristes dépensent moitié moins), touristes visibles
+    en chemise à fleurs.
+30. **Station d'épuration** et **pollution de l'eau** (lacs troubles, plages désertées), **épidémies** par quartier
+    (voile violet, vue « Santé »), **feux de forêt** qui se propagent d'arbre en arbre.
+31. **Catastrophes fun** (à activer) : **météorite** (cratère, incendies) et **monstre géant** qui traverse la ville.
+32. **Saisons vivantes** : arbres verts, roux, nus, cerisiers en fleurs et fleurs dans l'herbe au printemps, grands
+    sapins décorés dans les parcs en décembre. **Architecture par quartier** (moderne, classique, brique, colorée).
+33. **Ambiance sonore** : rumeur de la ville, oiseaux, pluie, vent, foule des événements, grillons la nuit.
+34. **Demandes des habitants** : un quartier réclame un parc, une école, moins de pollution… avec une échéance
+    et une récompense. **Records** (population, caisse, meilleur mois, pire catastrophe…) et **timelapse** de
+    la ville (une image tous les 6 mois).
+35. **Nouveau logo** (île isométrique de nuit) et icônes Android adaptatives.
+
+### Qualité
+
+- **102 tests jest** dont des tests aléatoires et un **monkey test du store** (milliers d'actions au hasard :
+  outils, glissers, annuler / rétablir, mois qui passent, rotation, sauvegarde / rechargement…). Les invariants
+  de la carte et des statistiques sont vérifiés après chaque action. Campagnes longues :
+  `MONKEY_SEEDS=20 MONKEY_STEPS=5000 npx jest monkey`.
+- Un test garde-fou vérifie l'ordre de déclaration des fonctions `'worklet'` (sinon plantage au chargement).
+
 ## Architecture
 
 ```
 src/engine/   projection iso 2:1 (iso.ts), rendu Skia (renderer.ts), blocs + culling (mapLayers.ts),
               terrain (terrain.ts), rotation (rotation.ts), PNJ (agents.ts), feux (traffic.ts)
 src/sim/      simulation pure : courant + eau, trafic (Dijkstra), pollution, déchets, services,
-              criminalité, incendies, catastrophes, RCI, budget, ordonnances
-src/store/    Zustand (useGameStore, annuler/rétablir) + persistance AsyncStorage (sauvegarde v2, réglages)
+              criminalité, incendies, catastrophes, RCI, budget, ordonnances, éducation, tourisme,
+              eau, épidémies, missions (missions.ts), records (records.ts)
+src/store/    Zustand (useGameStore, annuler/rétablir) + persistance AsyncStorage (sauvegarde v3 validée, réglages)
 src/hooks/    game loop (1 tick = 1 mois = 2 s), autoSave (15 s + arrière-plan), qualité automatique
 src/audio/    sons et musique hors ligne (expo-audio)
 src/ui/       HUD, barre d'outils, commandes de carte, menu à onglets, graphiques, tutoriel, fiches
